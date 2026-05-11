@@ -15,6 +15,7 @@ from sklearn.metrics import (
     accuracy_score,
     classification_report
 )
+from sklearn.model_selection import train_test_split
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
 
@@ -96,6 +97,8 @@ footer{{visibility:hidden;}}
 
 for key, val in {
     'dataset'     : pd.DataFrame(),
+    'df_train'    : pd.DataFrame(),
+    'df_test'     : pd.DataFrame(),
     'nb_model'    : None,
     'data_uji'    : pd.DataFrame(),
     'hasil_uji'   : pd.DataFrame(),
@@ -470,6 +473,7 @@ elif menu == "📂 Upload & Training":
             ✅ Normalisasi pekerjaan<br>
             ✅ Normalisasi tanggungan<br>
             ✅ Normalisasi status rumah<br>
+            ✅ Split 80% Latih / 20% Uji<br>
             ✅ Training model Naive Bayes
             </div>
         </div>
@@ -491,23 +495,91 @@ elif menu == "📂 Upload & Training":
             if df_bersih.empty:
                 st.error("❌ Kolom tidak ditemukan. Pastikan format file sesuai.")
             else:
+                # === SPLIT 80% LATIH / 20% UJI ===
+                df_train, df_test = train_test_split(
+                    df_bersih, test_size=0.2, random_state=42, stratify=df_bersih['LABEL']
+                )
+                df_train = df_train.reset_index(drop=True)
+                df_test  = df_test.reset_index(drop=True)
+
                 st.session_state.dataset  = df_bersih
-                st.session_state.nb_model = latih_model(df_bersih)
-                st.success(f"✅ Selesai! **{len(df_bersih)} data** berhasil diproses & model terlatih.")
+                st.session_state.df_train = df_train
+                st.session_state.df_test  = df_test
+                st.session_state.nb_model = latih_model(df_train)
 
-                # Statistik hasil training
-                st.markdown("### 📊 Hasil Training")
-                vc=df_bersih['LABEL'].value_counts()
-                c1,c2,c3,c4=st.columns(4)
-                model=st.session_state.nb_model
-                yp=model.predict(df_bersih.drop(columns=['LABEL']))
-                acc=accuracy_score(df_bersih['LABEL'].tolist(), yp)
+                model = st.session_state.nb_model
+                st.success(f"✅ Selesai! **{len(df_bersih)} data** diproses → **{len(df_train)} latih** & **{len(df_test)} uji** · Model terlatih.")
 
+                # --- Banner split ---
+                st.markdown(f"""
+                <div style='background:linear-gradient(135deg,{C2},{C5});border:2px solid {C3}60;
+                    border-radius:18px;padding:1.2rem 1.5rem;margin:1rem 0;
+                    box-shadow:0 4px 16px {C3}20;'>
+                    <div style='font-size:.95rem;font-weight:900;color:{C4};margin-bottom:.8rem;'>
+                        📐 Pembagian Dataset (Stratified Split)
+                    </div>
+                    <div style='display:flex;gap:1rem;flex-wrap:wrap;'>
+                        <div style='flex:1;background:{C5};border:1.5px solid {C3}50;border-radius:12px;
+                            padding:.8rem 1rem;text-align:center;min-width:120px;'>
+                            <div style='font-size:1.6rem;font-weight:900;color:{C4};'>{len(df_bersih)}</div>
+                            <div style='font-size:.78rem;font-weight:700;color:{C6}80;'>Total Dataset</div>
+                        </div>
+                        <div style='flex:1;background:{C5};border:2px solid #22c55e;border-radius:12px;
+                            padding:.8rem 1rem;text-align:center;min-width:120px;'>
+                            <div style='font-size:1.6rem;font-weight:900;color:#22c55e;'>{len(df_train)}</div>
+                            <div style='font-size:.78rem;font-weight:700;color:{C6}80;'>Data Latih (80%)</div>
+                        </div>
+                        <div style='flex:1;background:{C5};border:2px solid #f59e0b;border-radius:12px;
+                            padding:.8rem 1rem;text-align:center;min-width:120px;'>
+                            <div style='font-size:1.6rem;font-weight:900;color:#f59e0b;'>{len(df_test)}</div>
+                            <div style='font-size:.78rem;font-weight:700;color:{C6}80;'>Data Uji (20%)</div>
+                        </div>
+                    </div>
+                    <div style='margin-top:.9rem;background:{C2};border-radius:8px;height:16px;overflow:hidden;'>
+                        <div style='width:80%;height:100%;background:linear-gradient(90deg,#22c55e,#16a34a);
+                            border-radius:8px;display:inline-block;'></div>
+                        <div style='width:20%;height:100%;background:linear-gradient(90deg,#f59e0b,#d97706);
+                            border-radius:0 8px 8px 0;display:inline-block;'></div>
+                    </div>
+                    <div style='display:flex;justify-content:space-between;margin-top:.3rem;'>
+                        <span style='font-size:.75rem;font-weight:700;color:#22c55e;'>80% — Data Latih</span>
+                        <span style='font-size:.75rem;font-weight:700;color:#f59e0b;'>20% — Data Uji</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # --- Statistik training ---
+                st.markdown("### 📊 Statistik Data Latih (80%)")
+                vc_train = df_train['LABEL'].value_counts()
+                vc_test  = df_test['LABEL'].value_counts()
+                yp_train = model.predict(df_train.drop(columns=['LABEL']))
+                acc_train = accuracy_score(df_train['LABEL'].tolist(), yp_train)
+                yp_test  = model.predict(df_test.drop(columns=['LABEL']))
+                acc_test  = accuracy_score(df_test['LABEL'].tolist(), yp_test)
+
+                c1,c2,c3,c4 = st.columns(4)
                 for col, val, lbl_s, warna in [
-                    (c1, len(df_bersih), "Total Data Training", C4),
-                    (c2, vc.get('Ya',0), "Label : Ya", "#22c55e"),
-                    (c3, vc.get('Tidak',0), "Label : Tidak", "#f43f5e"),
-                    (c4, f"{round(acc*100,2)}%", "Akurasi Training", C4),
+                    (c1, len(df_train),          "Total Data Latih",   C4),
+                    (c2, vc_train.get('Ya',0),   "Label Ya (latih)",   "#22c55e"),
+                    (c3, vc_train.get('Tidak',0),"Label Tidak (latih)","#f43f5e"),
+                    (c4, f"{round(acc_train*100,2)}%", "Akurasi Data Latih", C4),
+                ]:
+                    with col:
+                        st.markdown(f"""
+                        <div class='metric-pill'>
+                            <div class='val' style='color:{warna};'>{val}</div>
+                            <div class='lbl'>{lbl_s}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown("### 📊 Statistik Data Uji (20%)")
+                c1,c2,c3,c4 = st.columns(4)
+                for col, val, lbl_s, warna in [
+                    (c1, len(df_test),          "Total Data Uji",     "#f59e0b"),
+                    (c2, vc_test.get('Ya',0),   "Label Ya (uji)",     "#22c55e"),
+                    (c3, vc_test.get('Tidak',0),"Label Tidak (uji)",  "#f43f5e"),
+                    (c4, f"{round(acc_test*100,2)}%", "Akurasi Data Uji", "#f59e0b"),
                 ]:
                     with col:
                         st.markdown(f"""
@@ -519,22 +591,38 @@ elif menu == "📂 Upload & Training":
 
                 st.markdown("<br>", unsafe_allow_html=True)
 
-                # Pie distribusi kelas
-                fig_pie = go.Figure(data=[go.Pie(
-                    labels=list(vc.index), values=list(vc.values),
-                    hole=.5, marker_colors=["#22c55e","#f43f5e"],
-                    textinfo="label+percent", textfont_size=13,
-                )])
-                fig_pie.update_layout(
-                    title=dict(text="Distribusi Label Dataset Training", font=dict(size=14)),
-                    height=280, showlegend=False, **PLOT_LAYOUT)
-                st.plotly_chart(fig_pie, use_container_width=True)
+                # Pie distribusi kelas total
+                vc = df_bersih['LABEL'].value_counts()
+                col_pie1, col_pie2 = st.columns(2)
+                with col_pie1:
+                    fig_pie = go.Figure(data=[go.Pie(
+                        labels=list(vc_train.index), values=list(vc_train.values),
+                        hole=.5, marker_colors=["#22c55e","#f43f5e"],
+                        textinfo="label+percent", textfont_size=13,
+                    )])
+                    fig_pie.update_layout(
+                        title=dict(text="Distribusi Label — Data Latih (80%)", font=dict(size=13)),
+                        height=260, showlegend=False, **PLOT_LAYOUT)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                with col_pie2:
+                    fig_pie2 = go.Figure(data=[go.Pie(
+                        labels=list(vc_test.index), values=list(vc_test.values),
+                        hole=.5, marker_colors=["#22c55e","#f43f5e"],
+                        textinfo="label+percent", textfont_size=13,
+                    )])
+                    fig_pie2.update_layout(
+                        title=dict(text="Distribusi Label — Data Uji (20%)", font=dict(size=13)),
+                        height=260, showlegend=False, **PLOT_LAYOUT)
+                    st.plotly_chart(fig_pie2, use_container_width=True)
 
-                # Preview dataset bersih
-                st.markdown("### 📋 Preview Dataset Setelah Preprocessing")
-                df_prev=df_bersih.copy()
-                df_prev.insert(0,"No",range(1,len(df_prev)+1))
-                st.dataframe(df_prev, use_container_width=True, height=400)
+                # Preview tabel latih & uji
+                tab_l, tab_u = st.tabs(["📋 Tabel Data Latih (80%)", "📋 Tabel Data Uji (20%)"])
+                with tab_l:
+                    df_prev = df_train.copy(); df_prev.insert(0,"No",range(1,len(df_prev)+1))
+                    st.dataframe(df_prev, use_container_width=True, height=350)
+                with tab_u:
+                    df_prev2 = df_test.copy(); df_prev2.insert(0,"No",range(1,len(df_prev2)+1))
+                    st.dataframe(df_prev2, use_container_width=True, height=350)
 
         except Exception as e:
             st.error(f"❌ Error : {e}")
@@ -706,149 +794,207 @@ elif menu == "📊 Evaluasi & Grafik":
     if st.session_state.dataset.empty or st.session_state.nb_model is None:
         st.warning("⚠️ Upload dataset terlebih dahulu.")
     else:
-        df=st.session_state.dataset; model=st.session_state.nb_model
-        TARGET='LABEL'; FITUR=[c for c in df.columns if c!=TARGET]
-        X=df[FITUR]; y_true=df[TARGET].tolist()
-        y_pred=model.predict(X)
-        labels=sorted(set(y_true))
-        acc=accuracy_score(y_true,y_pred)
-        cm=confusion_matrix(y_true,y_pred,labels=labels)
-        benar=sum(a==p for a,p in zip(y_true,y_pred)); salah=len(y_true)-benar
+        model  = st.session_state.nb_model
+        df_tr  = st.session_state.df_train if not st.session_state.df_train.empty else st.session_state.dataset
+        df_te  = st.session_state.df_test
+        TARGET = 'LABEL'
+        FITUR  = [c for c in df_tr.columns if c != TARGET]
 
-        # METRIK
-        st.markdown("### 📈 Metrik Utama")
-        c1,c2,c3,c4=st.columns(4)
-        for col, val, lbl_s, warna in [
-            (c1, f"{round(acc*100,2)}%", "Akurasi", C4),
-            (c2, benar, "Prediksi Benar", "#22c55e"),
-            (c3, salah, "Prediksi Salah", "#f43f5e"),
-            (c4, len(y_true), "Total Data", C4),
-        ]:
-            with col:
-                st.markdown(f"<div class='metric-pill'><div class='val' style='color:{warna};'>{val}</div><div class='lbl'>{lbl_s}</div></div>", unsafe_allow_html=True)
+        # Hitung untuk kedua set
+        yt_tr  = df_tr[TARGET].tolist(); yp_tr = model.predict(df_tr[FITUR])
+        yt_te  = df_te[TARGET].tolist() if not df_te.empty else []
+        yp_te  = model.predict(df_te[FITUR]) if not df_te.empty else []
+        labels = sorted(set(yt_tr))
 
-        st.markdown("---")
-        st.markdown("### 🗂 Confusion Matrix")
+        acc_tr = accuracy_score(yt_tr, yp_tr)
+        acc_te = accuracy_score(yt_te, yp_te) if yt_te else 0
+        benar_tr = sum(a==p for a,p in zip(yt_tr,yp_tr))
+        benar_te = sum(a==p for a,p in zip(yt_te,yp_te)) if yt_te else 0
 
-        c_kiri, c_kanan = st.columns(2)
+        # Ringkasan perbandingan
+        st.markdown(f"""
+        <div style='background:linear-gradient(135deg,{C2},{C5});border:2px solid {C3}60;
+            border-radius:18px;padding:1.2rem 1.5rem;margin-bottom:1.5rem;
+            box-shadow:0 4px 16px {C3}20;'>
+            <div style='font-size:.95rem;font-weight:900;color:{C4};margin-bottom:.8rem;'>
+                📊 Perbandingan Akurasi Data Latih vs Data Uji
+            </div>
+            <div style='display:flex;gap:1rem;flex-wrap:wrap;'>
+                <div style='flex:1;background:{C5};border:2px solid #22c55e;border-radius:12px;
+                    padding:.8rem 1rem;text-align:center;min-width:130px;'>
+                    <div style='font-size:1.7rem;font-weight:900;color:#22c55e;'>{round(acc_tr*100,2)}%</div>
+                    <div style='font-size:.78rem;font-weight:700;color:{C6}80;'>Akurasi Data Latih (80%)</div>
+                    <div style='font-size:.75rem;color:{C6}60;'>{len(df_tr)} data</div>
+                </div>
+                <div style='flex:1;background:{C5};border:2px solid #f59e0b;border-radius:12px;
+                    padding:.8rem 1rem;text-align:center;min-width:130px;'>
+                    <div style='font-size:1.7rem;font-weight:900;color:#f59e0b;'>{round(acc_te*100,2)}%</div>
+                    <div style='font-size:.78rem;font-weight:700;color:{C6}80;'>Akurasi Data Uji (20%)</div>
+                    <div style='font-size:.75rem;color:{C6}60;'>{len(df_te)} data</div>
+                </div>
+                <div style='flex:1;background:{C5};border:1.5px solid {C3}50;border-radius:12px;
+                    padding:.8rem 1rem;text-align:center;min-width:130px;'>
+                    <div style='font-size:1.7rem;font-weight:900;color:{C4};'>{len(df_tr)+len(df_te)}</div>
+                    <div style='font-size:.78rem;font-weight:700;color:{C6}80;'>Total Dataset</div>
+                    <div style='font-size:.75rem;color:{C6}60;'>80% latih + 20% uji</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        with c_kiri:
-            fig_cm=ff.create_annotated_heatmap(
-                z=cm.tolist(),
-                x=[f"Pred : {l}" for l in labels],
-                y=[f"Aktual : {l}" for l in labels],
-                annotation_text=[[str(v) for v in row] for row in cm.tolist()],
-                colorscale="RdPu", showscale=True,
-            )
-            fig_cm.update_layout(title=dict(text="Confusion Matrix Heatmap",font=dict(size=15)),
-                height=350, **PLOT_LAYOUT)
-            st.plotly_chart(fig_cm, use_container_width=True)
+        tab_eval_tr, tab_eval_te = st.tabs(["🟢 Evaluasi Data Latih (80%)", "🟡 Evaluasi Data Uji (20%)"])
 
-        with c_kanan:
-            if len(labels)==2:
-                tn,fp,fn,tp=cm.ravel()
-                fig_bar=go.Figure(data=[go.Bar(
-                    x=["TP","TN","FP","FN"], y=[tp,tn,fp,fn],
-                    text=[tp,tn,fp,fn], textposition="outside",
-                    marker_color=["#22c55e","#22c55e","#f43f5e","#f43f5e"],
-                    marker_line_width=0,
+        def tampil_evaluasi(y_true, y_pred, labels, judul_set):
+            acc  = accuracy_score(y_true, y_pred)
+            cm   = confusion_matrix(y_true, y_pred, labels=labels)
+            benar = sum(a==p for a,p in zip(y_true,y_pred)); salah=len(y_true)-benar
+
+            st.markdown(f"### 📈 Metrik Utama — {judul_set}")
+            c1,c2,c3,c4 = st.columns(4)
+            for col, val, lbl_s, warna in [
+                (c1, f"{round(acc*100,2)}%", "Akurasi", C4),
+                (c2, benar, "Prediksi Benar", "#22c55e"),
+                (c3, salah, "Prediksi Salah", "#f43f5e"),
+                (c4, len(y_true), "Total Data", C4),
+            ]:
+                with col:
+                    st.markdown(f"<div class='metric-pill'><div class='val' style='color:{warna};'>{val}</div><div class='lbl'>{lbl_s}</div></div>", unsafe_allow_html=True)
+
+            st.markdown("---")
+            st.markdown("### 🗂 Confusion Matrix")
+            c_kiri, c_kanan = st.columns(2)
+            with c_kiri:
+                fig_cm=ff.create_annotated_heatmap(
+                    z=cm.tolist(),
+                    x=[f"Pred : {l}" for l in labels],
+                    y=[f"Aktual : {l}" for l in labels],
+                    annotation_text=[[str(v) for v in row] for row in cm.tolist()],
+                    colorscale="RdPu", showscale=True,
+                )
+                fig_cm.update_layout(title=dict(text=f"Confusion Matrix — {judul_set}",font=dict(size=14)),
+                    height=350, **PLOT_LAYOUT)
+                st.plotly_chart(fig_cm, use_container_width=True)
+
+            with c_kanan:
+                if len(labels)==2:
+                    tn,fp,fn,tp=cm.ravel()
+                    fig_bar=go.Figure(data=[go.Bar(
+                        x=["TP","TN","FP","FN"], y=[tp,tn,fp,fn],
+                        text=[tp,tn,fp,fn], textposition="outside",
+                        marker_color=["#22c55e","#22c55e","#f43f5e","#f43f5e"],
+                        marker_line_width=0,
+                    )])
+                    fig_bar.update_layout(title=dict(text="TP / TN / FP / FN",font=dict(size=14)),
+                        height=350, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                    st.markdown(f"""
+                    <div style='font-size:.88rem;line-height:2.2;color:{C6};
+                         background:{C2};border-radius:12px;padding:.8rem 1rem;'>
+                    <span style='color:#22c55e;font-weight:800;'>● TP = {tp}</span> → Pred Ya & Aktual Ya<br>
+                    <span style='color:#22c55e;font-weight:800;'>● TN = {tn}</span> → Pred Tidak & Aktual Tidak<br>
+                    <span style='color:#f43f5e;font-weight:800;'>● FP = {fp}</span> → Pred Ya, Aktual Tidak<br>
+                    <span style='color:#f43f5e;font-weight:800;'>● FN = {fn}</span> → Pred Tidak, Aktual Ya
+                    </div>""", unsafe_allow_html=True)
+
+            st.markdown("---")
+            st.markdown("### 📊 Grafik Evaluasi")
+            ca,cb,cc = st.columns(3)
+            with ca:
+                fig_pie=go.Figure(data=[go.Pie(
+                    labels=["Benar","Salah"], values=[benar,salah], hole=.5,
+                    marker_colors=["#22c55e","#f43f5e"],
+                    textinfo="label+percent", textfont_size=13,
                 )])
-                fig_bar.update_layout(title=dict(text="TP / TN / FP / FN",font=dict(size=15)),
-                    height=350, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                fig_pie.update_layout(title=dict(text="Akurasi Prediksi",font=dict(size=14)),
+                    height=300, showlegend=False, **PLOT_LAYOUT)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            with cb:
+                ck_eval=Counter(y_true)
+                fig_dist=go.Figure(data=[go.Bar(
+                    x=list(ck_eval.keys()), y=list(ck_eval.values()),
+                    text=list(ck_eval.values()), textposition="outside",
+                    marker_color=["#22c55e" if k=="Ya" else "#f43f5e" for k in ck_eval],
+                )])
+                fig_dist.update_layout(title=dict(text="Distribusi Kelas Aktual",font=dict(size=14)),
+                    height=300, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
+                st.plotly_chart(fig_dist, use_container_width=True)
+            with cc:
+                ck_pred=Counter(y_pred)
+                fig_pr=go.Figure(data=[go.Bar(
+                    x=list(ck_pred.keys()), y=list(ck_pred.values()),
+                    text=list(ck_pred.values()), textposition="outside",
+                    marker_color=[C3]*len(ck_pred),
+                )])
+                fig_pr.update_layout(title=dict(text="Distribusi Kelas Prediksi",font=dict(size=14)),
+                    height=300, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
+                st.plotly_chart(fig_pr, use_container_width=True)
 
-                st.markdown(f"""
-                <div style='font-size:.88rem;line-height:2.2;color:{C6};
-                     background:{C2};border-radius:12px;padding:.8rem 1rem;'>
-                <span style='color:#22c55e;font-weight:800;'>● TP = {tp}</span> → Pred Ya & Aktual Ya<br>
-                <span style='color:#22c55e;font-weight:800;'>● TN = {tn}</span> → Pred Tidak & Aktual Tidak<br>
-                <span style='color:#f43f5e;font-weight:800;'>● FP = {fp}</span> → Pred Ya, Aktual Tidak<br>
-                <span style='color:#f43f5e;font-weight:800;'>● FN = {fn}</span> → Pred Tidak, Aktual Ya
-                </div>""", unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown("### 📋 Classification Report")
+            c_l2, c_r2 = st.columns(2)
+            with c_l2:
+                rpt=pd.DataFrame(classification_report(y_true,y_pred,output_dict=True)).transpose().round(4)
+                st.dataframe(rpt, use_container_width=True)
+            with c_r2:
+                rpt_clean={k:v for k,v in classification_report(y_true,y_pred,output_dict=True).items() if k in labels}
+                fig_rpt=go.Figure()
+                for m, warna_m in [("precision",C3),("recall",C4),("f1-score",C8)]:
+                    fig_rpt.add_trace(go.Bar(
+                        name=m.capitalize(),
+                        x=list(rpt_clean.keys()),
+                        y=[rpt_clean[k][m] for k in rpt_clean],
+                        marker_color=warna_m,
+                        text=[round(rpt_clean[k][m],3) for k in rpt_clean],
+                        textposition="outside",
+                    ))
+                fig_rpt.update_layout(barmode="group",
+                    title=dict(text="Precision / Recall / F1-Score",font=dict(size=14)),
+                    height=320, yaxis=dict(gridcolor="#e5e7eb",range=[0,1.2]),
+                    legend=dict(orientation="h",y=1.18), **PLOT_LAYOUT)
+                st.plotly_chart(fig_rpt, use_container_width=True)
 
-        st.markdown("---")
-        st.markdown("### 📊 Grafik Evaluasi")
+        with tab_eval_tr:
+            tampil_evaluasi(yt_tr, yp_tr, labels, "Data Latih 80%")
+            st.markdown("---")
+            st.markdown("### 🔎 Detail Prediksi — Data Latih")
+            df_hasil_tr = df_tr.copy()
+            df_hasil_tr["Prediksi"] = yp_tr
+            df_hasil_tr["Status"]   = ["✅ Benar" if a==p else "❌ Salah" for a,p in zip(yt_tr,yp_tr)]
+            df_hasil_tr.insert(0,"No",range(1,len(df_hasil_tr)+1))
+            st.dataframe(df_hasil_tr, use_container_width=True, height=380)
+            c_d1,c_d2 = st.columns(2)
+            with c_d1:
+                st.download_button("📥 CSV — Hasil Data Latih",
+                    data=df_to_csv_bytes(df_hasil_tr), file_name="evaluasi_data_latih.csv",
+                    mime="text/csv", use_container_width=True)
+            with c_d2:
+                st.download_button("📥 Excel — Hasil Data Latih",
+                    data=df_to_excel_bytes(df_hasil_tr), file_name="evaluasi_data_latih.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True)
 
-        ca,cb,cc=st.columns(3)
-
-        with ca:
-            fig_pie=go.Figure(data=[go.Pie(
-                labels=["Benar","Salah"], values=[benar,salah], hole=.5,
-                marker_colors=["#22c55e","#f43f5e"],
-                textinfo="label+percent", textfont_size=13,
-            )])
-            fig_pie.update_layout(title=dict(text="Akurasi Prediksi",font=dict(size=14)),
-                height=300, showlegend=False, **PLOT_LAYOUT)
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-        with cb:
-            ck_eval=Counter(y_true)
-            fig_dist=go.Figure(data=[go.Bar(
-                x=list(ck_eval.keys()), y=list(ck_eval.values()),
-                text=list(ck_eval.values()), textposition="outside",
-                marker_color=["#22c55e" if k=="Ya" else "#f43f5e" for k in ck_eval],
-            )])
-            fig_dist.update_layout(title=dict(text="Distribusi Kelas Aktual",font=dict(size=14)),
-                height=300, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
-            st.plotly_chart(fig_dist, use_container_width=True)
-
-        with cc:
-            ck_pred=Counter(y_pred)
-            fig_pr=go.Figure(data=[go.Bar(
-                x=list(ck_pred.keys()), y=list(ck_pred.values()),
-                text=list(ck_pred.values()), textposition="outside",
-                marker_color=[C3]*len(ck_pred),
-            )])
-            fig_pr.update_layout(title=dict(text="Distribusi Kelas Prediksi",font=dict(size=14)),
-                height=300, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
-            st.plotly_chart(fig_pr, use_container_width=True)
-
-        st.markdown("---")
-        st.markdown("### 📋 Classification Report")
-
-        c_l2, c_r2 = st.columns(2)
-        with c_l2:
-            rpt=pd.DataFrame(classification_report(y_true,y_pred,output_dict=True)).transpose().round(4)
-            st.dataframe(rpt, use_container_width=True)
-
-        with c_r2:
-            rpt_clean={k:v for k,v in classification_report(y_true,y_pred,output_dict=True).items() if k in labels}
-            fig_rpt=go.Figure()
-            for m, warna_m in [("precision",C3),("recall",C4),("f1-score",C8)]:
-                fig_rpt.add_trace(go.Bar(
-                    name=m.capitalize(),
-                    x=list(rpt_clean.keys()),
-                    y=[rpt_clean[k][m] for k in rpt_clean],
-                    marker_color=warna_m,
-                    text=[round(rpt_clean[k][m],3) for k in rpt_clean],
-                    textposition="outside",
-                ))
-            fig_rpt.update_layout(
-                barmode="group",
-                title=dict(text="Precision / Recall / F1-Score",font=dict(size=14)),
-                height=320, yaxis=dict(gridcolor="#e5e7eb",range=[0,1.2]),
-                legend=dict(orientation="h",y=1.18), **PLOT_LAYOUT)
-            st.plotly_chart(fig_rpt, use_container_width=True)
-
-        st.markdown("---")
-        st.markdown("### 🔎 Detail Prediksi per Data")
-        df_hasil=df.copy()
-        df_hasil["Prediksi"]=y_pred
-        df_hasil["Status"]=["✅ Benar" if a==p else "❌ Salah" for a,p in zip(y_true,y_pred)]
-        df_hasil.insert(0,"No",range(1,len(df_hasil)+1))
-        st.dataframe(df_hasil, use_container_width=True, height=400)
-
-        st.markdown("---")
-        c_d1,c_d2=st.columns(2)
-        with c_d1:
-            st.download_button("📥 Download Hasil Prediksi CSV",
-                data=df_to_csv_bytes(df_hasil), file_name="hasil_prediksi_training.csv",
-                mime="text/csv", use_container_width=True)
-        with c_d2:
-            st.download_button("📥 Download Hasil Prediksi Excel",
-                data=df_to_excel_bytes(df_hasil), file_name="hasil_prediksi_training.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True)
+        with tab_eval_te:
+            if not df_te.empty:
+                tampil_evaluasi(yt_te, yp_te, labels, "Data Uji 20%")
+                st.markdown("---")
+                st.markdown("### 🔎 Detail Prediksi — Data Uji")
+                df_hasil_te = df_te.copy()
+                df_hasil_te["Prediksi"] = yp_te
+                df_hasil_te["Status"]   = ["✅ Benar" if a==p else "❌ Salah" for a,p in zip(yt_te,yp_te)]
+                df_hasil_te.insert(0,"No",range(1,len(df_hasil_te)+1))
+                st.dataframe(df_hasil_te, use_container_width=True, height=380)
+                c_d1,c_d2 = st.columns(2)
+                with c_d1:
+                    st.download_button("📥 CSV — Hasil Data Uji",
+                        data=df_to_csv_bytes(df_hasil_te), file_name="evaluasi_data_uji.csv",
+                        mime="text/csv", use_container_width=True)
+                with c_d2:
+                    st.download_button("📥 Excel — Hasil Data Uji",
+                        data=df_to_excel_bytes(df_hasil_te), file_name="evaluasi_data_uji.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True)
+            else:
+                st.info("💡 Data uji 20% akan tersedia setelah upload dataset.")
 
 # =========================================================
 # 🔍 PREDIKSI DATA BARU
