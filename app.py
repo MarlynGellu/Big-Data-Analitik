@@ -399,26 +399,34 @@ class NaiveBayesManual:
 
 def auto_preprocess(df_raw):
 
+    # Paksa semua nilai jadi string agar tidak ada float/NaN error
+    df_raw = df_raw.fillna('').astype(str)
+
     KATA = ['PENDAPATAN', 'PEKERJAAN', 'TANGGUNGAN', 'STATUS', 'LABEL', 'NAMA', 'NO']
 
     header_row = None
     for i in range(min(10, len(df_raw))):
-        baris  = df_raw.iloc[i].astype(str).str.upper()
-        gabung = ' '.join(baris.values)
-        cocok  = sum(1 for k in KATA if k in gabung)
+        baris      = df_raw.iloc[i].str.upper()
+        nilai_valid = [v for v in baris.values if isinstance(v, str)]
+        gabung     = ' '.join(nilai_valid)
+        cocok      = sum(1 for k in KATA if k in gabung)
         if cocok >= 3:
             header_row = i
             break
 
     if header_row is not None:
-        df_raw.columns = df_raw.iloc[header_row].astype(str).str.strip()
+        df_raw.columns = df_raw.iloc[header_row].str.strip()
         df_raw         = df_raw.iloc[header_row + 1:].copy()
         df_raw.reset_index(drop=True, inplace=True)
     else:
         df_raw.columns = df_raw.columns.astype(str).str.strip()
 
-    df_raw = df_raw.loc[:, ~df_raw.columns.isin(['nan', 'None', ''])]
-    df_raw.dropna(how='all', inplace=True)
+    # Hapus kolom kosong / nan
+    df_raw = df_raw.loc[:, ~df_raw.columns.isin(['nan', 'None', '', 'NaN'])]
+    df_raw = df_raw.loc[:, df_raw.columns.notna()]
+
+    # Hapus baris yang seluruhnya string kosong
+    df_raw = df_raw.loc[~(df_raw == '').all(axis=1)]
     df_raw.reset_index(drop=True, inplace=True)
 
     def cari(kata):
@@ -624,11 +632,18 @@ if menu == f"{ICON} Upload Dataset":
     if file:
         try:
             if file.name.endswith(".csv"):
-                df_raw = pd.read_csv(file, sep=';', header=0, dtype=str)
-                if len(df_raw.columns) <= 1:
-                    df_raw = pd.read_csv(file, sep=',', header=0, dtype=str)
+                try:
+                    df_raw = pd.read_csv(file, sep=';', header=0, dtype=str)
+                    if len(df_raw.columns) <= 1:
+                        file.seek(0)
+                        df_raw = pd.read_csv(file, sep=',', header=0, dtype=str)
+                except Exception:
+                    file.seek(0)
+                    df_raw = pd.read_csv(file, dtype=str)
             else:
+                # Baca Excel tanpa header, semua paksa string
                 df_raw = pd.read_excel(file, header=None, dtype=str)
+                df_raw = df_raw.fillna('').astype(str)
 
             st.success(f"✅ File **{file.name}** berhasil dibaca — {len(df_raw)} baris ditemukan")
 
