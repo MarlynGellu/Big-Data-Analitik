@@ -16,6 +16,7 @@ from sklearn.metrics import (
     classification_report
 )
 from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import GaussianNB
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
 
@@ -86,6 +87,9 @@ section[data-testid="stSidebar"]{{background:linear-gradient(180deg,{C2} 0%,{C5}
 .info-box{{background:linear-gradient(135deg,{C2},{C5});border-left:4px solid {C4};border-radius:12px;padding:1rem 1.2rem;margin-bottom:1rem;}}
 .info-box h4{{color:{C4};margin:0 0 .4rem;font-size:1rem;}}
 .info-box p{{color:{C6};margin:0;font-size:.88rem;line-height:1.7;}}
+.keterangan-box{{background:linear-gradient(135deg,{C2},{C5});border:1.5px solid {C3}60;border-radius:14px;padding:.85rem 1.1rem;margin-bottom:1rem;}}
+.keterangan-box .ket-title{{font-size:.82rem;font-weight:900;color:{C4};margin-bottom:.5rem;}}
+.keterangan-box .ket-item{{font-size:.8rem;color:{C6};line-height:2;font-weight:600;}}
 footer{{visibility:hidden;}}
 #MainMenu{{visibility:hidden;}}
 </style>
@@ -97,6 +101,7 @@ footer{{visibility:hidden;}}
 
 for key, val in {
     'dataset'     : pd.DataFrame(),
+    'df_tampil'   : pd.DataFrame(),
     'df_train'    : pd.DataFrame(),
     'df_test'     : pd.DataFrame(),
     'nb_model'    : None,
@@ -107,148 +112,203 @@ for key, val in {
         st.session_state[key] = val
 
 # =========================================================
-# NAIVE BAYES MANUAL
+# GAUSSIAN NAIVE BAYES WRAPPER
 # =========================================================
 
-class NaiveBayesManual:
-    def __init__(self, alpha=1):
-        self.alpha=alpha; self.prior={}; self.likelihood={}
-        self.kelas=[]; self.fitur=[]
+def gaussian_prob(x, mean, std):
+    """Hitung probabilitas Gaussian P(x|C) secara manual."""
+    if std == 0 or pd.isna(std):
+        std = 1e-4
+    exp = np.exp(-((x - mean) ** 2) / (2 * std ** 2))
+    return (1 / (np.sqrt(2 * np.pi) * std)) * exp
+
+class GaussianNBManual:
+    def __init__(self):
+        self.model  = GaussianNB()
+        self.prior  = {}
+        self.mean_  = {}
+        self.std_   = {}
+        self.kelas  = []
+        self.fitur  = []
 
     def fit(self, X, y):
-        self.kelas=sorted(y.unique().tolist()); self.fitur=list(X.columns)
-        total=len(y); ck=Counter(y)
-        self.prior={k: ck[k]/total for k in self.kelas}
+        self.fitur = list(X.columns)
+        self.kelas = sorted(y.unique().tolist())
+        self.model.fit(X, y)
         for k in self.kelas:
-            self.likelihood[k]={}
-            Xk=X[y==k]
-            for f in self.fitur:
-                nu=X[f].unique(); cf=Counter(Xk[f])
-                self.likelihood[k][f]={
-                    v:(cf.get(v,0)+self.alpha)/(len(Xk)+self.alpha*len(nu))
-                    for v in nu}
+            Xk = X[y == k]
+            self.prior[k]  = len(Xk) / len(y)
+            self.mean_[k]  = Xk.mean()
+            self.std_[k]   = Xk.std().replace(0, 1e-4)
         return self
 
-    def predict_proba_log(self, row):
-        h={}
-        for k in self.kelas:
-            lp=math.log(self.prior[k])
-            for f in self.fitur:
-                lh=self.likelihood[k][f].get(row[f], self.alpha/(self.alpha*10+1))
-                lp+=math.log(lh+1e-9)
-            h[k]=lp
-        return h
-
-    def predict_one(self, row):
-        p=self.predict_proba_log(row)
-        return max(p, key=p.get)
-
     def predict(self, X):
-        return [self.predict_one(X.iloc[i]) for i in range(len(X))]
+        if isinstance(X, pd.DataFrame):
+            return self.model.predict(X).tolist()
+        return self.model.predict(X).tolist()
+
+    def predict_one(self, row_dict):
+        row_df = pd.DataFrame([row_dict])[self.fitur]
+        return self.model.predict(row_df)[0]
+
+    def predict_proba_log(self, row_dict):
+        h = {}
+        for k in self.kelas:
+            lp = np.log(self.prior[k])
+            for f in self.fitur:
+                p = gaussian_prob(row_dict[f], self.mean_[k][f], self.std_[k][f])
+                lp += np.log(p + 1e-300)
+            h[k] = lp
+        return h
 
 # =========================================================
 # PREPROCESSING
 # =========================================================
 
+def _norm_pendapatan(x):
+    x = str(x).lower().replace('.', '').replace(',', '').replace('rp', '').strip()
+    angka = ''.join(filter(str.isdigit, x))
+    if not angka:
+        return np.nan
+    angka = int(angka)
+    if 500_000 <= angka <= 1_000_000:
+        return 0
+    if 1_000_001 <= angka <= 4_000_000:
+        return 1
+    if angka > 4_000_000:
+        return 2
+    return np.nan
+
+def _norm_pekerjaan(x):
+    x = str(x).lower().strip()
+    peta = {
+        'petani'       : 0,
+        'pns'          : 1,
+        'polisi'       : 2,
+        'wiraswasta'   : 3,
+        'buruh'        : 4,
+        'pedagang'     : 5,
+        'nelayan'      : 6,
+        'swasta'       : 7,
+        'honorer'      : 8,
+        'tidak bekerja': 9,
+    }
+    for k, v in peta.items():
+        if k in x:
+            return v
+    return np.nan
+
+def _norm_tanggungan(x):
+    try:
+        n = int(float(str(x).strip()))
+        if n >= 1:
+            return n
+        return np.nan
+    except:
+        return np.nan
+
+def _norm_rumah(x):
+    x = str(x).lower().strip()
+    if 'milik' in x or 'sendiri' in x:
+        return 1
+    if 'kontrak' in x or 'sewa' in x:
+        return 0
+    return np.nan
+
+def _norm_label(x):
+    x = str(x).lower().strip()
+    if x in ['ya', '1', 'layak', 'iya']:
+        return 1
+    if x in ['tidak', '0', 'tidak layak']:
+        return 0
+    return np.nan
+
+def _cari_kolom(df, kata):
+    for c in df.columns:
+        if kata.upper() in str(c).upper():
+            return c
+    return None
+
+def _deteksi_header(df_raw):
+    KATA = ['PENDAPATAN', 'PEKERJAAN', 'TANGGUNGAN', 'STATUS', 'LABEL']
+    if len(df_raw) > 3:
+        baris2 = df_raw.iloc[2].astype(str).str.upper()
+        gabung2 = ' '.join(baris2.values)
+        if sum(1 for k in KATA if k in gabung2) >= 3:
+            df_raw.columns = df_raw.iloc[2].astype(str).str.strip()
+            df_raw = df_raw.iloc[3:].copy()
+            df_raw.reset_index(drop=True, inplace=True)
+            return df_raw
+    for i in range(min(10, len(df_raw))):
+        baris = df_raw.iloc[i].astype(str).str.upper()
+        gabung = ' '.join(baris.values)
+        if sum(1 for k in KATA if k in gabung) >= 3:
+            df_raw.columns = df_raw.iloc[i].astype(str).str.strip()
+            df_raw = df_raw.iloc[i+1:].copy()
+            df_raw.reset_index(drop=True, inplace=True)
+            return df_raw
+    df_raw.columns = df_raw.columns.astype(str).str.strip()
+    return df_raw
+
 def auto_preprocess(df_raw):
     df_raw = df_raw.fillna('').astype(str)
-    KATA = ['PENDAPATAN','PEKERJAAN','TANGGUNGAN','STATUS','LABEL','NAMA','NO']
-    header_row=None
-    for i in range(min(10,len(df_raw))):
-        baris=df_raw.iloc[i].str.upper()
-        gabung=' '.join([v for v in baris.values if isinstance(v,str)])
-        if sum(1 for k in KATA if k in gabung)>=3:
-            header_row=i; break
-    if header_row is not None:
-        df_raw.columns=df_raw.iloc[header_row].str.strip()
-        df_raw=df_raw.iloc[header_row+1:].copy()
-        df_raw.reset_index(drop=True,inplace=True)
-    else:
-        df_raw.columns=df_raw.columns.astype(str).str.strip()
-    df_raw=df_raw.loc[:,~df_raw.columns.isin(['nan','None','','NaN'])]
-    df_raw=df_raw.loc[:,df_raw.columns.notna()]
-    df_raw=df_raw.loc[~(df_raw=='').all(axis=1)]
-    df_raw.reset_index(drop=True,inplace=True)
-
-    def cari(kata):
-        for c in df_raw.columns:
-            if kata.upper() in str(c).upper(): return c
-        return None
-
-    def pend(x):
-        x=str(x).lower().replace('.','').replace(',','').replace('rp','').strip()
-        a=''.join(filter(str.isdigit,x))
-        if not a: return np.nan
-        a=int(a)
-        if 500000<=a<=1000000: return 'Rendah'
-        if 1000001<=a<=4000000: return 'Sedang'
-        if a>4000000: return 'Tinggi'
-        return np.nan
-
-    def pek(x):
-        x=str(x).lower().strip()
-        peta={'petani':'Petani','pns':'PNS','polisi':'Polisi',
-              'wiraswasta':'Wiraswasta','buruh':'Buruh','pedagang':'Pedagang',
-              'nelayan':'Nelayan','swasta':'Swasta','honorer':'Honorer',
-              'tidak bekerja':'Tidak Bekerja'}
-        for k,v in peta.items():
-            if k in x: return v
-        if x and x!='nan': return x.title()
-        return np.nan
-
-    def tang(x):
-        try:
-            n=int(float(str(x).strip()))
-            if 1<=n<=2: return 'Sedikit'
-            if 3<=n<=4: return 'Sedang'
-            if n>=5: return 'Banyak'
-            return np.nan
-        except: return np.nan
-
-    def rumah(x):
-        x=str(x).lower().strip()
-        if 'milik' in x or 'sendiri' in x: return 'Milik Sendiri'
-        if 'kontrak' in x or 'sewa' in x: return 'Kontrak/Sewa'
-        return np.nan
-
-    def lbl(x):
-        x=str(x).lower().strip()
-        if x in ['ya','1','layak','iya']: return 'Ya'
-        if x in ['tidak','0','tidak layak']: return 'Tidak'
-        return np.nan
-
-    cp=cari('PENDAPATAN'); ck=cari('PEKERJAAN')
-    ct=cari('TANGGUNGAN'); cr=cari('STATUS RUMAH') or cari('RUMAH')
-    cl=cari('LABEL')
-
-    peta={}
-    if cp: peta['PENDAPATAN ORANG TUA']=df_raw[cp].apply(pend)
-    if ck: peta['PEKERJAAN ORANG TUA'] =df_raw[ck].apply(pek)
-    if ct: peta['JUMLAH TANGGUNGAN']   =df_raw[ct].apply(tang)
-    if cr: peta['STATUS RUMAH']        =df_raw[cr].apply(rumah)
-    if cl: peta['LABEL']               =df_raw[cl].apply(lbl)
-
-    out=pd.DataFrame(peta)
-    out.dropna(inplace=True)
-    out.reset_index(drop=True,inplace=True)
-    return out
+    df = _deteksi_header(df_raw)
+    df.columns = df.columns.astype(str).str.strip()
+    df = df.loc[:, ~df.columns.isin(['nan', 'None', '', 'NaN'])]
+    df = df.loc[:, df.columns.notna()]
+    df = df.loc[~(df == '').all(axis=1)]
+    df.reset_index(drop=True, inplace=True)
+    df.columns = (
+        df.columns.str.upper()
+        .str.replace(r'\s+', ' ', regex=True)
+        .str.strip()
+    )
+    cp = _cari_kolom(df, 'PENDAPATAN')
+    ck = _cari_kolom(df, 'PEKERJAAN')
+    ct = _cari_kolom(df, 'TANGGUNGAN')
+    cr = _cari_kolom(df, 'STATUS RUMAH') or _cari_kolom(df, 'RUMAH')
+    cl = _cari_kolom(df, 'LABEL')
+    df_tampil = df.copy()
+    if cp: df_tampil[cp] = df[cp].apply(_norm_pendapatan)
+    if ck: df_tampil[ck] = df[ck].apply(_norm_pekerjaan)
+    if ct: df_tampil[ct] = df[ct].apply(_norm_tanggungan)
+    if cr: df_tampil[cr] = df[cr].apply(_norm_rumah)
+    if cl: df_tampil[cl] = df[cl].apply(_norm_label)
+    peta = {}
+    if cp: peta['PENDAPATAN ORANG TUA'] = df[cp].apply(_norm_pendapatan)
+    if ck: peta['PEKERJAAN ORANG TUA']  = df[ck].apply(_norm_pekerjaan)
+    if ct: peta['JUMLAH TANGGUNGAN']    = df[ct].apply(_norm_tanggungan)
+    if cr: peta['STATUS RUMAH']         = df[cr].apply(_norm_rumah)
+    if cl: peta['LABEL']                = df[cl].apply(_norm_label)
+    df_model = pd.DataFrame(peta)
+    valid_idx = df_model.dropna().index
+    df_model  = df_model.loc[valid_idx].reset_index(drop=True)
+    df_tampil = df_tampil.loc[valid_idx].reset_index(drop=True)
+    return df_tampil, df_model
 
 def latih_model(df):
-    X=df.drop(columns=['LABEL']); y=df['LABEL']
-    m=NaiveBayesManual(alpha=1); m.fit(X,y); return m
+    X = df.drop(columns=['LABEL'])
+    y = df['LABEL']
+    m = GaussianNBManual()
+    m.fit(X, y)
+    return m
 
 def baca_file(file):
     if file.name.endswith(".csv"):
-        try:
-            df=pd.read_csv(file,sep=';',header=0,dtype=str)
-            if len(df.columns)<=1:
-                file.seek(0); df=pd.read_csv(file,sep=',',header=0,dtype=str)
-        except:
-            file.seek(0); df=pd.read_csv(file,dtype=str)
+        for sep in [';', ',', '\t']:
+            try:
+                file.seek(0)
+                df = pd.read_csv(file, sep=sep, header=0, dtype=str)
+                if len(df.columns) > 1:
+                    return df
+            except:
+                continue
+        file.seek(0)
+        return pd.read_csv(file, dtype=str)
     else:
-        df=pd.read_excel(file,header=None,dtype=str)
-        df=df.fillna('').astype(str)
-    return df
+        df = pd.read_excel(file, header=None, dtype=str)
+        df = df.fillna('').astype(str)
+        return df
 
 def df_to_excel_bytes(df):
     buf=io.BytesIO(); df.to_excel(buf,index=False); return buf.getvalue()
@@ -268,6 +328,50 @@ PLOT_LAYOUT = dict(
 )
 
 # =========================================================
+# LABEL DESKRIPSI (untuk tampilan di selectbox)
+# =========================================================
+
+# Keterangan kode numerik untuk ditampilkan di UI
+KETERANGAN_PENDAPATAN = {
+    0: "0 = Rendah (Rp 500rb – Rp 1jt)",
+    1: "1 = Sedang (Rp 1jt – Rp 4jt)",
+    2: "2 = Tinggi (> Rp 4jt)",
+}
+KETERANGAN_PEKERJAAN = {
+    0: "0 = Petani",
+    1: "1 = PNS (Pegawai Negeri Sipil)",
+    2: "2 = Polisi",
+    3: "3 = Wiraswasta",
+    4: "4 = Buruh",
+    5: "5 = Pedagang",
+    6: "6 = Nelayan",
+    7: "7 = Swasta",
+    8: "8 = Honorer",
+    9: "9 = Tidak Bekerja",
+}
+KETERANGAN_RUMAH = {
+    0: "0 = Kontrak / Sewa",
+    1: "1 = Milik Sendiri",
+}
+KETERANGAN_LABEL = {
+    0: "0 = Tidak Layak BSM",
+    1: "1 = Layak BSM (Ya)",
+}
+
+def render_keterangan(judul, keterangan_dict):
+    """Render kotak keterangan kode numerik."""
+    items_html = "".join([
+        f"<div class='ket-item'><b style='color:{C4};'>{k}</b> → {v}</div>"
+        for k, v in keterangan_dict.items()
+    ])
+    st.markdown(f"""
+    <div class='keterangan-box'>
+        <div class='ket-title'>📌 {judul}</div>
+        {items_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+# =========================================================
 # SIDEBAR
 # =========================================================
 
@@ -281,7 +385,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     st.markdown("---")
 
-    menu = st.radio("", [
+    menu = st.radio("Navigasi Menu", [
         "🏠 Dashboard",
         "📂 Upload & Training",
         "🔬 Preprocessing",
@@ -300,8 +404,9 @@ with st.sidebar:
         st.markdown(f"<div class='card' style='padding:.9rem;'><div class='card-title'>📋 Dataset</div>", unsafe_allow_html=True)
         st.markdown(f"<div style='font-size:.88rem;color:{C6};'><b>Total :</b> {len(df_s)} data</div>", unsafe_allow_html=True)
         for k,v in vc_s.items():
-            w="#22c55e" if k=="Ya" else "#f43f5e"
-            st.markdown(f"<div style='color:{w};font-weight:700;font-size:.85rem;'>● {k} : {v}</div>", unsafe_allow_html=True)
+            lbl_k = "Ya (Layak)" if k==1 else ("Tidak Layak" if k==0 else str(k))
+            w="#22c55e" if k==1 else "#f43f5e"
+            st.markdown(f"<div style='color:{w};font-weight:700;font-size:.85rem;'>● {lbl_k} : {v}</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown(f"<div style='font-size:.72rem;color:{C6}50;text-align:center;margin-top:.5rem;font-weight:600;'>© 2025 · Naive Bayes BSM</div>", unsafe_allow_html=True)
@@ -325,7 +430,6 @@ if menu == "🏠 Dashboard":
 
     st.markdown("## 🏠 Dashboard Sistem")
 
-    # Info sistem
     col1, col2 = st.columns([3,2])
 
     with col1:
@@ -359,22 +463,21 @@ if menu == "🏠 Dashboard":
             <div class='card-title'>🎯 Variabel yang Digunakan</div>
             <div style='font-size:.88rem;color:{C6};line-height:2.2;'>
             <span style='color:{C4};font-weight:800;'>① Pendapatan Orang Tua</span><br>
-            &nbsp;&nbsp;Rendah / Sedang / Tinggi<br>
+            &nbsp;&nbsp;0=Rendah / 1=Sedang / 2=Tinggi<br>
             <span style='color:{C4};font-weight:800;'>② Pekerjaan Orang Tua</span><br>
-            &nbsp;&nbsp;Petani / PNS / dll<br>
+            &nbsp;&nbsp;0=Petani / 1=PNS / 2=Polisi / dst.<br>
             <span style='color:{C4};font-weight:800;'>③ Jumlah Tanggungan</span><br>
-            &nbsp;&nbsp;Sedikit / Sedang / Banyak<br>
+            &nbsp;&nbsp;Angka asli (1, 2, 3, …)<br>
             <span style='color:{C4};font-weight:800;'>④ Status Rumah</span><br>
-            &nbsp;&nbsp;Milik Sendiri / Kontrak/Sewa<br>
+            &nbsp;&nbsp;0=Kontrak/Sewa / 1=Milik Sendiri<br>
             <span style='color:#22c55e;font-weight:800;'>⑤ Label (Target)</span><br>
-            &nbsp;&nbsp;Ya (Layak) / Tidak (Tidak Layak)
+            &nbsp;&nbsp;1=Ya (Layak) / 0=Tidak (Tidak Layak)
             </div>
         </div>
         """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # Langkah penggunaan
     st.markdown("### 🗺️ Alur Penggunaan Sistem")
 
     steps = [
@@ -407,13 +510,12 @@ if menu == "🏠 Dashboard":
 
     st.markdown("---")
 
-    # Statistik dataset jika sudah upload
     if not st.session_state.dataset.empty:
         df=st.session_state.dataset
         st.markdown("### 📊 Statistik Dataset Aktif")
         c1,c2,c3,c4 = st.columns(4)
         total=len(df); vc=df['LABEL'].value_counts()
-        ya=vc.get('Ya',0); tidak=vc.get('Tidak',0)
+        ya=vc.get(1,0); tidak=vc.get(0,0)
         akurasi_info = ""
         if st.session_state.nb_model:
             model=st.session_state.nb_model
@@ -487,30 +589,29 @@ elif menu == "📂 Upload & Training":
             st.success(f"✅ File **{file.name}** berhasil dibaca — {len(df_raw)} baris")
 
             with st.expander("👁 Lihat Data Mentah (10 baris pertama)"):
-                st.dataframe(df_raw.head(10), use_container_width=True)
+                st.dataframe(df_raw.head(10), width="stretch")
 
             with st.spinner("⏳ Preprocessing & Training model..."):
-                df_bersih = auto_preprocess(df_raw.copy())
+                df_tampil, df_model = auto_preprocess(df_raw.copy())
 
-            if df_bersih.empty:
+            if df_model.empty:
                 st.error("❌ Kolom tidak ditemukan. Pastikan format file sesuai.")
             else:
-                # === SPLIT 80% LATIH / 20% UJI ===
                 df_train, df_test = train_test_split(
-                    df_bersih, test_size=0.2, random_state=42, stratify=df_bersih['LABEL']
+                    df_model, test_size=0.2, random_state=42, stratify=df_model['LABEL']
                 )
                 df_train = df_train.reset_index(drop=True)
                 df_test  = df_test.reset_index(drop=True)
 
-                st.session_state.dataset  = df_bersih
-                st.session_state.df_train = df_train
-                st.session_state.df_test  = df_test
-                st.session_state.nb_model = latih_model(df_train)
+                st.session_state.df_tampil = df_tampil
+                st.session_state.dataset   = df_model
+                st.session_state.df_train  = df_train
+                st.session_state.df_test   = df_test
+                st.session_state.nb_model  = latih_model(df_train)
 
                 model = st.session_state.nb_model
-                st.success(f"✅ Selesai! **{len(df_bersih)} data** diproses → **{len(df_train)} latih** & **{len(df_test)} uji** · Model terlatih.")
+                st.success(f"✅ Selesai! **{len(df_model)} data** valid diproses → **{len(df_train)} latih** & **{len(df_test)} uji** · Model terlatih.")
 
-                # --- Banner split ---
                 st.markdown(f"""
                 <div style='background:linear-gradient(135deg,{C2},{C5});border:2px solid {C3}60;
                     border-radius:18px;padding:1.2rem 1.5rem;margin:1rem 0;
@@ -521,7 +622,7 @@ elif menu == "📂 Upload & Training":
                     <div style='display:flex;gap:1rem;flex-wrap:wrap;'>
                         <div style='flex:1;background:{C5};border:1.5px solid {C3}50;border-radius:12px;
                             padding:.8rem 1rem;text-align:center;min-width:120px;'>
-                            <div style='font-size:1.6rem;font-weight:900;color:{C4};'>{len(df_bersih)}</div>
+                            <div style='font-size:1.6rem;font-weight:900;color:{C4};'>{len(df_model)}</div>
                             <div style='font-size:.78rem;font-weight:700;color:{C6}80;'>Total Dataset</div>
                         </div>
                         <div style='flex:1;background:{C5};border:2px solid #22c55e;border-radius:12px;
@@ -548,7 +649,6 @@ elif menu == "📂 Upload & Training":
                 </div>
                 """, unsafe_allow_html=True)
 
-                # --- Statistik training ---
                 st.markdown("### 📊 Statistik Data Latih (80%)")
                 vc_train = df_train['LABEL'].value_counts()
                 vc_test  = df_test['LABEL'].value_counts()
@@ -559,10 +659,10 @@ elif menu == "📂 Upload & Training":
 
                 c1,c2,c3,c4 = st.columns(4)
                 for col, val, lbl_s, warna in [
-                    (c1, len(df_train),          "Total Data Latih",   C4),
-                    (c2, vc_train.get('Ya',0),   "Label Ya (latih)",   "#22c55e"),
-                    (c3, vc_train.get('Tidak',0),"Label Tidak (latih)","#f43f5e"),
-                    (c4, f"{round(acc_train*100,2)}%", "Akurasi Data Latih", C4),
+                    (c1, len(df_train),        "Total Data Latih",   C4),
+                    (c2, vc_train.get(1,0),    "Label Ya (latih)",   "#22c55e"),
+                    (c3, vc_train.get(0,0),    "Label Tidak (latih)","#f43f5e"),
+                    (c4, f"{round(acc_train*100,2)}%","Akurasi Data Latih", C4),
                 ]:
                     with col:
                         st.markdown(f"""
@@ -576,10 +676,10 @@ elif menu == "📂 Upload & Training":
                 st.markdown("### 📊 Statistik Data Uji (20%)")
                 c1,c2,c3,c4 = st.columns(4)
                 for col, val, lbl_s, warna in [
-                    (c1, len(df_test),          "Total Data Uji",     "#f59e0b"),
-                    (c2, vc_test.get('Ya',0),   "Label Ya (uji)",     "#22c55e"),
-                    (c3, vc_test.get('Tidak',0),"Label Tidak (uji)",  "#f43f5e"),
-                    (c4, f"{round(acc_test*100,2)}%", "Akurasi Data Uji", "#f59e0b"),
+                    (c1, len(df_test),        "Total Data Uji",     "#f59e0b"),
+                    (c2, vc_test.get(1,0),    "Label Ya (uji)",     "#22c55e"),
+                    (c3, vc_test.get(0,0),    "Label Tidak (uji)",  "#f43f5e"),
+                    (c4, f"{round(acc_test*100,2)}%","Akurasi Data Uji","#f59e0b"),
                 ]:
                     with col:
                         st.markdown(f"""
@@ -591,8 +691,7 @@ elif menu == "📂 Upload & Training":
 
                 st.markdown("<br>", unsafe_allow_html=True)
 
-                # Pie distribusi kelas total
-                vc = df_bersih['LABEL'].value_counts()
+                vc = df_model['LABEL'].value_counts()
                 col_pie1, col_pie2 = st.columns(2)
                 with col_pie1:
                     fig_pie = go.Figure(data=[go.Pie(
@@ -603,7 +702,7 @@ elif menu == "📂 Upload & Training":
                     fig_pie.update_layout(
                         title=dict(text="Distribusi Label — Data Latih (80%)", font=dict(size=13)),
                         height=260, showlegend=False, **PLOT_LAYOUT)
-                    st.plotly_chart(fig_pie, use_container_width=True)
+                    st.plotly_chart(fig_pie, width="stretch", key="pie_train")
                 with col_pie2:
                     fig_pie2 = go.Figure(data=[go.Pie(
                         labels=list(vc_test.index), values=list(vc_test.values),
@@ -613,16 +712,15 @@ elif menu == "📂 Upload & Training":
                     fig_pie2.update_layout(
                         title=dict(text="Distribusi Label — Data Uji (20%)", font=dict(size=13)),
                         height=260, showlegend=False, **PLOT_LAYOUT)
-                    st.plotly_chart(fig_pie2, use_container_width=True)
+                    st.plotly_chart(fig_pie2, width="stretch", key="pie_test")
 
-                # Preview tabel latih & uji
                 tab_l, tab_u = st.tabs(["📋 Tabel Data Latih (80%)", "📋 Tabel Data Uji (20%)"])
                 with tab_l:
                     df_prev = df_train.copy(); df_prev.insert(0,"No",range(1,len(df_prev)+1))
-                    st.dataframe(df_prev, use_container_width=True, height=350)
+                    st.dataframe(df_prev, width="stretch", height=350)
                 with tab_u:
                     df_prev2 = df_test.copy(); df_prev2.insert(0,"No",range(1,len(df_prev2)+1))
-                    st.dataframe(df_prev2, use_container_width=True, height=350)
+                    st.dataframe(df_prev2, width="stretch", height=350)
 
         except Exception as e:
             st.error(f"❌ Error : {e}")
@@ -638,11 +736,16 @@ elif menu == "🔬 Preprocessing":
     if st.session_state.dataset.empty:
         st.warning("⚠️ Upload dataset terlebih dahulu di menu Upload & Training.")
     else:
+        df_view = st.session_state.df_tampil if not st.session_state.df_tampil.empty \
+                  else st.session_state.dataset
         df=st.session_state.dataset
 
-        df_num=df.copy(); df_num.insert(0,"No",range(1,len(df_num)+1))
-        st.markdown("### 📋 Dataset Setelah Preprocessing")
-        st.dataframe(df_num, use_container_width=True, height=420)
+        st.info("💡 Tabel di bawah menampilkan **semua kolom asli** dataset. Kolom yang dinormalisasi (PENDAPATAN, PEKERJAAN, JUMLAH TANGGUNGAN, STATUS RUMAH, LABEL) sudah diubah ke nilai numerik.")
+
+        df_num = df_view.copy()
+        df_num.insert(0,"No",range(1,len(df_num)+1))
+        st.markdown("### 📋 Dataset Setelah Preprocessing (Semua Kolom)")
+        st.dataframe(df_num, width="stretch", height=420)
 
         st.markdown("---")
         st.markdown("### 📊 Distribusi Setiap Kolom")
@@ -650,44 +753,49 @@ elif menu == "🔬 Preprocessing":
         cols=st.columns(len(df.columns))
         for i, col in enumerate(df.columns):
             with cols[i]:
-                vc=df[col].value_counts()
+                vc=df[col].value_counts().sort_index()
                 st.markdown(f"<div class='card' style='padding:.9rem;'><div class='card-title' style='font-size:.85rem;'>{col}</div>", unsafe_allow_html=True)
                 for val, cnt in vc.items():
                     pct=cnt/len(df)*100
-                    w="#22c55e" if val=="Ya" else ("#f43f5e" if val=="Tidak" else C4)
-                    bar_w=int(pct/2)
+                    if col == 'LABEL':
+                        w = "#22c55e" if val == 1 else "#f43f5e"
+                        label_txt = f"{val} ({'Layak' if val==1 else 'Tidak Layak'})"
+                    else:
+                        w = C4
+                        label_txt = str(val)
                     st.markdown(f"""
                     <div style='margin-bottom:6px;'>
-                        <div style='color:{w};font-weight:700;font-size:.85rem;'>{val}</div>
+                        <div style='color:{w};font-weight:700;font-size:.85rem;'>{label_txt}</div>
                         <div style='font-size:.78rem;color:{C6}80;'>{cnt} data ({pct:.1f}%)</div>
                         <div style='height:6px;background:{C2};border-radius:3px;margin-top:3px;'>
-                            <div style='height:6px;width:{min(bar_w*2,100)}%;background:{w};border-radius:3px;'></div>
+                            <div style='height:6px;width:{min(int(pct),100)}%;background:{w};border-radius:3px;'></div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown("---")
-        st.markdown("### 🗂 Panduan Kategori Normalisasi")
+        st.markdown("### 🗂 Panduan Encoding Numerik")
         c1,c2,c3=st.columns(3)
         with c1:
             st.markdown(f"""
             <div class='card'>
                 <div class='card-title'>💰 Pendapatan Orang Tua</div>
                 <div style='font-size:.88rem;color:{C6};line-height:2;'>
-                <b style='color:{C4};'>Rendah</b> : Rp 500rb – Rp 1jt<br>
-                <b style='color:{C4};'>Sedang</b> : Rp 1jt – Rp 4jt<br>
-                <b style='color:{C4};'>Tinggi</b> : &gt; Rp 4jt
+                <b style='color:{C4};'>0</b> = Rendah : Rp 500rb – Rp 1jt<br>
+                <b style='color:{C4};'>1</b> = Sedang : Rp 1jt – Rp 4jt<br>
+                <b style='color:{C4};'>2</b> = Tinggi : &gt; Rp 4jt
                 </div>
             </div>""", unsafe_allow_html=True)
         with c2:
             st.markdown(f"""
             <div class='card'>
-                <div class='card-title'>👨‍👩‍👧 Jumlah Tanggungan</div>
+                <div class='card-title'>💼 Pekerjaan & 👨‍👩‍👧 Tanggungan</div>
                 <div style='font-size:.88rem;color:{C6};line-height:2;'>
-                <b style='color:{C4};'>Sedikit</b> : 1 – 2 orang<br>
-                <b style='color:{C4};'>Sedang</b>  : 3 – 4 orang<br>
-                <b style='color:{C4};'>Banyak</b>  : ≥ 5 orang
+                <b style='color:{C4};'>0</b>=Petani · <b style='color:{C4};'>1</b>=PNS<br>
+                <b style='color:{C4};'>2</b>=Polisi · <b style='color:{C4};'>3</b>=Wiraswasta<br>
+                <b style='color:{C4};'>4</b>=Buruh · dst.<br>
+                Tanggungan = angka asli (1,2,3,…)
                 </div>
             </div>""", unsafe_allow_html=True)
         with c3:
@@ -695,10 +803,10 @@ elif menu == "🔬 Preprocessing":
             <div class='card'>
                 <div class='card-title'>🏠 Status Rumah & Label</div>
                 <div style='font-size:.88rem;color:{C6};line-height:2;'>
-                <b style='color:{C4};'>Milik Sendiri</b><br>
-                <b style='color:{C4};'>Kontrak/Sewa</b><br>
-                <b style='color:#22c55e;'>Label Ya</b> /
-                <b style='color:#f43f5e;'>Tidak</b>
+                <b style='color:{C4};'>0</b> = Kontrak/Sewa<br>
+                <b style='color:{C4};'>1</b> = Milik Sendiri<br>
+                <b style='color:#22c55e;'>Label 1</b> = Layak BSM<br>
+                <b style='color:#f43f5e;'>Label 0</b> = Tidak Layak
                 </div>
             </div>""", unsafe_allow_html=True)
 
@@ -706,12 +814,12 @@ elif menu == "🔬 Preprocessing":
         c_a,c_b=st.columns(2)
         with c_a:
             st.download_button("📥 Download CSV", data=df_to_csv_bytes(df),
-                file_name="preprocessing_bsm.csv", mime="text/csv", use_container_width=True)
+                file_name="preprocessing_bsm.csv", mime="text/csv", width="stretch")
         with c_b:
             st.download_button("📥 Download Excel", data=df_to_excel_bytes(df),
                 file_name="preprocessing_bsm.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True)
+                width="stretch")
 
 # =========================================================
 # 🧮 PERHITUNGAN MANUAL
@@ -729,59 +837,106 @@ elif menu == "🧮 Perhitungan Manual":
         kelas_list=sorted(df[TARGET].unique().tolist())
         total=len(df); ck=Counter(df[TARGET])
 
-        # PRIOR
         st.markdown(f"<div class='card'><div class='card-title'><span class='step-badge'>Langkah 1</span> Hitung Prior P(C)</div>", unsafe_allow_html=True)
         cols=st.columns(len(kelas_list)+1)
         with cols[0]:
             st.markdown(f"<div class='metric-pill'><div class='val'>{total}</div><div class='lbl'>Total Data (N)</div></div>", unsafe_allow_html=True)
         for i,k in enumerate(kelas_list):
-            p=ck[k]/total; w="#22c55e" if k=="Ya" else "#f43f5e"
+            p=ck[k]/total; w="#22c55e" if k==1 else "#f43f5e"
+            lbl_k = "Ya (Layak)" if k==1 else "Tidak (Tidak Layak)"
             with cols[i+1]:
-                st.markdown(f"<div class='metric-pill'><div class='val' style='color:{w};'>{round(p,4)}</div><div class='lbl'>P({k}) = {ck[k]}/{total}</div></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='metric-pill'><div class='val' style='color:{w};'>{round(p,4)}</div><div class='lbl'>P({lbl_k}) = {ck[k]}/{total}</div></div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # LIKELIHOOD
-        st.markdown(f"<div class='card'><div class='card-title'><span class='step-badge'>Langkah 2</span> Hitung Likelihood P(xi | C) dengan Laplace Smoothing</div>", unsafe_allow_html=True)
-        st.info("**Laplace Smoothing** (alpha=1) digunakan agar tidak ada probabilitas bernilai nol.")
+        st.markdown(f"<div class='card'><div class='card-title'><span class='step-badge'>Langkah 2</span> Hitung Likelihood Gaussian P(xi | C) — Mean & Std Dev</div>", unsafe_allow_html=True)
+        st.info("Gaussian Naive Bayes menggunakan **distribusi normal** untuk menghitung P(xi|C). Setiap fitur numerik dianggap berdistribusi Gaussian pada tiap kelas.")
+        st.latex(r"P(x_i \mid C) = \frac{1}{\sqrt{2\pi}\,\sigma} \exp\!\left(-\frac{(x_i - \mu)^2}{2\sigma^2}\right)")
 
-        for f in FITUR:
-            st.markdown(f"#### 🔹 {f}")
-            nilai_unik=sorted(df[f].unique().astype(str)); V=len(nilai_unik)
-            rows=[]
-            for v in nilai_unik:
-                row_d={"Nilai":v}
+        if st.session_state.nb_model:
+            nb = st.session_state.nb_model
+            for f in FITUR:
+                st.markdown(f"#### \U0001f539 {f}")
+                rows_lh = []
                 for k in kelas_list:
-                    Xk=df[df[TARGET]==k]; nk=len(Xk)
-                    c=Counter(Xk[f].astype(str)).get(v,0)
-                    lh=(c+1)/(nk+V)
-                    row_d[f"P(xi|{k}) — ({c}+1)/({nk}+{V})"]=round(lh,6)
-                rows.append(row_d)
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    mu  = round(float(nb.mean_[k][f]), 4)
+                    sig = round(float(nb.std_[k][f]),  4)
+                    lbl = "Ya (Layak)" if k==1 else "Tidak (Tidak Layak)"
+                    rows_lh.append({
+                        "Kelas"       : lbl,
+                        "Mean (μ)"    : mu,
+                        "Std (σ)"     : sig,
+                        "Rumus PDF"   : f"1/(√2π × {sig}) × exp(-(x-{mu})²/2×{sig}²)",
+                    })
+                st.dataframe(pd.DataFrame(rows_lh), width="stretch", hide_index=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # POSTERIOR
         st.markdown(f"<div class='card'><div class='card-title'><span class='step-badge'>Langkah 3</span> Rumus Posterior & Prediksi</div>", unsafe_allow_html=True)
         st.latex(r"P(C \mid X) \propto P(C) \times \prod_{i=1}^{n} P(x_i \mid C)")
+        st.markdown(f"<div style='color:{C6};font-weight:600;font-size:.9rem;margin-bottom:.6rem;'>Untuk efisiensi, digunakan <b>log-posterior</b> agar terhindar dari underflow bilangan kecil :</div>", unsafe_allow_html=True)
+        st.latex(r"\log P(C \mid X) \propto \log P(C) + \sum_{{i=1}}^{{n}} \log P(x_i \mid C)")
         st.markdown(f"<div style='color:{C6};font-weight:600;font-size:.9rem;'>Kelas dengan <b>log-posterior terbesar</b> dipilih sebagai hasil prediksi.</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Detail teks
-        with st.expander("📄 Lihat Perhitungan Lengkap (Format Terminal)"):
-            teks=f"{'='*55}\nPRIOR P(C)\n{'='*55}\nTotal Data = {total}\n"
+        st.markdown("### \U0001f50d Contoh Perhitungan Per Data")
+        idx_data = st.number_input("Pilih nomor data (baris ke-)", min_value=1, max_value=len(df), value=1, step=1)
+        contoh_row = df.iloc[idx_data - 1]
+        if st.session_state.nb_model:
+            nb = st.session_state.nb_model
+            lbl_aktual = "Ya (Layak)" if contoh_row[TARGET]==1 else "Tidak (Tidak Layak)"
+            warna_aktual = "#22c55e" if contoh_row[TARGET]==1 else "#f43f5e"
+            info_fitur = "  ".join([f"<b>{f}</b>: {contoh_row[f]}" for f in FITUR])
+            st.markdown(f"""
+            <div class='info-box'>
+                <h4>\U0001f4cb Data ke-{idx_data}</h4>
+                <p>{info_fitur}<br>
+                <b>Label Aktual</b>: <span style='color:{warna_aktual};font-weight:800;'>{lbl_aktual}</span></p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            rows_post = []
             for k in kelas_list:
-                teks+=f"P({k}) = {ck[k]}/{total} = {round(ck[k]/total,6)}\n"
-            teks+=f"\n{'='*55}\nLIKELIHOOD P(xi|C) — LAPLACE SMOOTHING\n{'='*55}\n"
-            for k in kelas_list:
-                Xk=df[df[TARGET]==k]
-                teks+=f"\n--- KELAS : {k} (n={len(Xk)}) ---\n"
+                lp  = np.log(nb.prior[k])
+                det = f"log({round(nb.prior[k],4)})"
                 for f in FITUR:
-                    nu=sorted(df[f].unique().astype(str)); V=len(nu)
-                    teks+=f"\n  [ {f} ]\n"
-                    for v in nu:
-                        c=Counter(Xk[f].astype(str)).get(v,0)
-                        lh=(c+1)/(len(Xk)+V)
-                        teks+=f"    P({v}|{k}) = ({c}+1)/({len(Xk)}+{V}) = {round(lh,6)}\n"
-            st.code(teks, language="text")
+                    xi  = float(contoh_row[f])
+                    mu  = float(nb.mean_[k][f])
+                    sig = float(nb.std_[k][f])
+                    p   = gaussian_prob(xi, mu, sig)
+                    lp += np.log(p + 1e-300)
+                    det += f" + log(N({xi:.2f};{mu:.3f},{sig:.3f}))"
+                rows_post.append({
+                    "Kelas"         : "Ya (Layak)" if k==1 else "Tidak (Tidak Layak)",
+                    "Log Posterior" : round(lp, 6),
+                    "Detail"        : det,
+                })
+            df_post = pd.DataFrame(rows_post)
+            best_idx = df_post["Log Posterior"].idxmax()
+            best_lbl = df_post.loc[best_idx, "Kelas"]
+            df_post["Hasil"] = ["\u2705 Terpilih" if i==best_idx else "" for i in df_post.index]
+            st.dataframe(df_post, width="stretch", hide_index=True)
+            warna_pred = "#22c55e" if "Ya" in best_lbl else "#f43f5e"
+            st.markdown(f"<div style='text-align:center;padding:.8rem;'><span style='color:{warna_pred};font-size:1.1rem;font-weight:900;'>\u25b6 Prediksi Data ke-{idx_data} : {best_lbl}</span></div>", unsafe_allow_html=True)
+
+        with st.expander("\U0001f4c4 Lihat Perhitungan Lengkap (Format Terminal)"):
+            if st.session_state.nb_model:
+                nb  = st.session_state.nb_model
+                out = f"{'='*55}\nGAUSSIAN NAIVE BAYES — PERHITUNGAN MANUAL\n{'='*55}\n\n"
+                out += f"Total Data = {total}\n\n--- PRIOR P(C) ---\n"
+                for k in kelas_list:
+                    lbl = "Ya (Layak)" if k==1 else "Tidak (Tidak Layak)"
+                    out += f"P({lbl}) = {ck[k]}/{total} = {round(ck[k]/total,6)}\n"
+                out += "\n--- MEAN & STD PER FITUR ---\n"
+                for k in kelas_list:
+                    lbl = "Ya (Layak)" if k==1 else "Tidak (Tidak Layak)"
+                    out += f"\nKelas : {lbl}\n"
+                    for f in FITUR:
+                        mu  = round(float(nb.mean_[k][f]),4)
+                        sig = round(float(nb.std_[k][f]),4)
+                        out += f"  {f}: mean={mu}, std={sig}\n"
+                out += "\n--- RUMUS PDF GAUSSIAN ---\n"
+                out += "P(xi|C) = 1/(sqrt(2pi)*sigma) * exp(-(xi-mu)^2 / (2*sigma^2))\n"
+                st.code(out, language="text")
+
 
 # =========================================================
 # 📊 EVALUASI & GRAFIK
@@ -800,7 +955,6 @@ elif menu == "📊 Evaluasi & Grafik":
         TARGET = 'LABEL'
         FITUR  = [c for c in df_tr.columns if c != TARGET]
 
-        # Hitung untuk kedua set
         yt_tr  = df_tr[TARGET].tolist(); yp_tr = model.predict(df_tr[FITUR])
         yt_te  = df_te[TARGET].tolist() if not df_te.empty else []
         yp_te  = model.predict(df_te[FITUR]) if not df_te.empty else []
@@ -808,10 +962,7 @@ elif menu == "📊 Evaluasi & Grafik":
 
         acc_tr = accuracy_score(yt_tr, yp_tr)
         acc_te = accuracy_score(yt_te, yp_te) if yt_te else 0
-        benar_tr = sum(a==p for a,p in zip(yt_tr,yp_tr))
-        benar_te = sum(a==p for a,p in zip(yt_te,yp_te)) if yt_te else 0
 
-        # Ringkasan perbandingan
         st.markdown(f"""
         <div style='background:linear-gradient(135deg,{C2},{C5});border:2px solid {C3}60;
             border-radius:18px;padding:1.2rem 1.5rem;margin-bottom:1.5rem;
@@ -844,7 +995,8 @@ elif menu == "📊 Evaluasi & Grafik":
 
         tab_eval_tr, tab_eval_te = st.tabs(["🟢 Evaluasi Data Latih (80%)", "🟡 Evaluasi Data Uji (20%)"])
 
-        def tampil_evaluasi(y_true, y_pred, labels, judul_set):
+        # ---- FUNGSI EVALUASI DENGAN KEY UNIK PER TAB ----
+        def tampil_evaluasi(y_true, y_pred, labels, judul_set, key_prefix):
             acc  = accuracy_score(y_true, y_pred)
             cm   = confusion_matrix(y_true, y_pred, labels=labels)
             benar = sum(a==p for a,p in zip(y_true,y_pred)); salah=len(y_true)-benar
@@ -873,7 +1025,8 @@ elif menu == "📊 Evaluasi & Grafik":
                 )
                 fig_cm.update_layout(title=dict(text=f"Confusion Matrix — {judul_set}",font=dict(size=14)),
                     height=350, **PLOT_LAYOUT)
-                st.plotly_chart(fig_cm, use_container_width=True)
+                # KEY UNIK: gunakan key_prefix
+                st.plotly_chart(fig_cm, width="stretch", key=f"{key_prefix}_cm")
 
             with c_kanan:
                 if len(labels)==2:
@@ -886,7 +1039,8 @@ elif menu == "📊 Evaluasi & Grafik":
                     )])
                     fig_bar.update_layout(title=dict(text="TP / TN / FP / FN",font=dict(size=14)),
                         height=350, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    # KEY UNIK
+                    st.plotly_chart(fig_bar, width="stretch", key=f"{key_prefix}_bar_cm")
                     st.markdown(f"""
                     <div style='font-size:.88rem;line-height:2.2;color:{C6};
                          background:{C2};border-radius:12px;padding:.8rem 1rem;'>
@@ -907,17 +1061,19 @@ elif menu == "📊 Evaluasi & Grafik":
                 )])
                 fig_pie.update_layout(title=dict(text="Akurasi Prediksi",font=dict(size=14)),
                     height=300, showlegend=False, **PLOT_LAYOUT)
-                st.plotly_chart(fig_pie, use_container_width=True)
+                # KEY UNIK
+                st.plotly_chart(fig_pie, width="stretch", key=f"{key_prefix}_pie_akurasi")
             with cb:
                 ck_eval=Counter(y_true)
                 fig_dist=go.Figure(data=[go.Bar(
                     x=list(ck_eval.keys()), y=list(ck_eval.values()),
                     text=list(ck_eval.values()), textposition="outside",
-                    marker_color=["#22c55e" if k=="Ya" else "#f43f5e" for k in ck_eval],
+                    marker_color=["#22c55e" if k==1 else "#f43f5e" for k in ck_eval],
                 )])
                 fig_dist.update_layout(title=dict(text="Distribusi Kelas Aktual",font=dict(size=14)),
                     height=300, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
-                st.plotly_chart(fig_dist, use_container_width=True)
+                # KEY UNIK
+                st.plotly_chart(fig_dist, width="stretch", key=f"{key_prefix}_bar_aktual")
             with cc:
                 ck_pred=Counter(y_pred)
                 fig_pr=go.Figure(data=[go.Bar(
@@ -927,14 +1083,15 @@ elif menu == "📊 Evaluasi & Grafik":
                 )])
                 fig_pr.update_layout(title=dict(text="Distribusi Kelas Prediksi",font=dict(size=14)),
                     height=300, yaxis=dict(gridcolor="#e5e7eb"), showlegend=False, **PLOT_LAYOUT)
-                st.plotly_chart(fig_pr, use_container_width=True)
+                # KEY UNIK
+                st.plotly_chart(fig_pr, width="stretch", key=f"{key_prefix}_bar_pred")
 
             st.markdown("---")
             st.markdown("### 📋 Classification Report")
             c_l2, c_r2 = st.columns(2)
             with c_l2:
                 rpt=pd.DataFrame(classification_report(y_true,y_pred,output_dict=True)).transpose().round(4)
-                st.dataframe(rpt, use_container_width=True)
+                st.dataframe(rpt, width="stretch")
             with c_r2:
                 rpt_clean={k:v for k,v in classification_report(y_true,y_pred,output_dict=True).items() if k in labels}
                 fig_rpt=go.Figure()
@@ -951,48 +1108,51 @@ elif menu == "📊 Evaluasi & Grafik":
                     title=dict(text="Precision / Recall / F1-Score",font=dict(size=14)),
                     height=320, yaxis=dict(gridcolor="#e5e7eb",range=[0,1.2]),
                     legend=dict(orientation="h",y=1.18), **PLOT_LAYOUT)
-                st.plotly_chart(fig_rpt, use_container_width=True)
+                # KEY UNIK
+                st.plotly_chart(fig_rpt, width="stretch", key=f"{key_prefix}_bar_clf")
 
         with tab_eval_tr:
-            tampil_evaluasi(yt_tr, yp_tr, labels, "Data Latih 80%")
+            # key_prefix = "tr" untuk data latih
+            tampil_evaluasi(yt_tr, yp_tr, labels, "Data Latih 80%", key_prefix="tr")
             st.markdown("---")
             st.markdown("### 🔎 Detail Prediksi — Data Latih")
             df_hasil_tr = df_tr.copy()
             df_hasil_tr["Prediksi"] = yp_tr
             df_hasil_tr["Status"]   = ["✅ Benar" if a==p else "❌ Salah" for a,p in zip(yt_tr,yp_tr)]
             df_hasil_tr.insert(0,"No",range(1,len(df_hasil_tr)+1))
-            st.dataframe(df_hasil_tr, use_container_width=True, height=380)
+            st.dataframe(df_hasil_tr, width="stretch", height=380)
             c_d1,c_d2 = st.columns(2)
             with c_d1:
                 st.download_button("📥 CSV — Hasil Data Latih",
                     data=df_to_csv_bytes(df_hasil_tr), file_name="evaluasi_data_latih.csv",
-                    mime="text/csv", use_container_width=True)
+                    mime="text/csv", width="stretch")
             with c_d2:
                 st.download_button("📥 Excel — Hasil Data Latih",
                     data=df_to_excel_bytes(df_hasil_tr), file_name="evaluasi_data_latih.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True)
+                    width="stretch")
 
         with tab_eval_te:
             if not df_te.empty:
-                tampil_evaluasi(yt_te, yp_te, labels, "Data Uji 20%")
+                # key_prefix = "te" untuk data uji
+                tampil_evaluasi(yt_te, yp_te, labels, "Data Uji 20%", key_prefix="te")
                 st.markdown("---")
                 st.markdown("### 🔎 Detail Prediksi — Data Uji")
                 df_hasil_te = df_te.copy()
                 df_hasil_te["Prediksi"] = yp_te
                 df_hasil_te["Status"]   = ["✅ Benar" if a==p else "❌ Salah" for a,p in zip(yt_te,yp_te)]
                 df_hasil_te.insert(0,"No",range(1,len(df_hasil_te)+1))
-                st.dataframe(df_hasil_te, use_container_width=True, height=380)
+                st.dataframe(df_hasil_te, width="stretch", height=380)
                 c_d1,c_d2 = st.columns(2)
                 with c_d1:
                     st.download_button("📥 CSV — Hasil Data Uji",
                         data=df_to_csv_bytes(df_hasil_te), file_name="evaluasi_data_uji.csv",
-                        mime="text/csv", use_container_width=True)
+                        mime="text/csv", width="stretch")
                 with c_d2:
                     st.download_button("📥 Excel — Hasil Data Uji",
                         data=df_to_excel_bytes(df_hasil_te), file_name="evaluasi_data_uji.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True)
+                        width="stretch")
             else:
                 st.info("💡 Data uji 20% akan tersedia setelah upload dataset.")
 
@@ -1010,26 +1170,75 @@ elif menu == "🔍 Prediksi Data Baru":
         model=st.session_state.nb_model
         df_ref=st.session_state.dataset
 
-        def pil(kolom):
-            return sorted(df_ref[kolom].unique().tolist()) if kolom in df_ref.columns else []
+        # Mapping teks → kode numerik
+        _map_pend  = {"Rendah (0)":0, "Sedang (1)":1, "Tinggi (2)":2}
+        _map_rumah = {"Kontrak / Sewa (0)":0, "Milik Sendiri (1)":1}
+        _map_pek   = {
+            "Petani (0)":0, "PNS - Pegawai Negeri Sipil (1)":1,
+            "Polisi (2)":2, "Wiraswasta (3)":3,
+            "Buruh (4)":4, "Pedagang (5)":5,
+            "Nelayan (6)":6, "Swasta (7)":7,
+            "Honorer (8)":8, "Tidak Bekerja (9)":9,
+        }
 
         st.markdown(f"<div class='card'><div class='card-title'>✏️ Masukkan Data Siswa</div>", unsafe_allow_html=True)
+
+        # -- Kotak keterangan kode --
+        with st.expander("📌 Lihat Keterangan Kode Numerik Setiap Variabel"):
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                render_keterangan("Pendapatan Orang Tua", KETERANGAN_PENDAPATAN)
+            with k2:
+                render_keterangan("Pekerjaan Orang Tua", KETERANGAN_PEKERJAAN)
+            with k3:
+                render_keterangan("Status Rumah", KETERANGAN_RUMAH)
+            with k4:
+                render_keterangan("Label / Hasil", KETERANGAN_LABEL)
+
         c1,c2=st.columns(2)
         with c1:
-            pendapatan=st.selectbox("💰 Pendapatan Orang Tua", pil('PENDAPATAN ORANG TUA') or ["Rendah","Sedang","Tinggi"])
-            tanggungan=st.selectbox("👨‍👩‍👧 Jumlah Tanggungan", pil('JUMLAH TANGGUNGAN') or ["Sedikit","Sedang","Banyak"])
+            pendapatan = st.selectbox(
+                "💰 Pendapatan Orang Tua",
+                list(_map_pend.keys()),
+                help="0=Rendah (≤Rp1jt) | 1=Sedang (Rp1jt–4jt) | 2=Tinggi (>Rp4jt)"
+            )
+            tanggungan_input = st.number_input(
+                "👨‍👩‍👧 Jumlah Tanggungan (angka)",
+                min_value=1, max_value=6, value=3, step=1,
+                help="Masukkan jumlah anggota keluarga yang ditanggung (angka asli, misal: 3)"
+            )
         with c2:
-            pekerjaan=st.selectbox("💼 Pekerjaan Orang Tua", pil('PEKERJAAN ORANG TUA') or ["Petani","PNS","Wiraswasta","Buruh"])
-            rumah=st.selectbox("🏠 Status Rumah", pil('STATUS RUMAH') or ["Milik Sendiri","Kontrak/Sewa"])
+            pekerjaan = st.selectbox(
+                "💼 Pekerjaan Orang Tua",
+                list(_map_pek.keys()),
+                help="Pilih pekerjaan yang sesuai. Kode dalam kurung adalah nilai numeriknya."
+            )
+            rumah = st.selectbox(
+                "🏠 Status Rumah",
+                list(_map_rumah.keys()),
+                help="0=Kontrak/Sewa | 1=Milik Sendiri"
+            )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        if st.button("🔍 Prediksi Sekarang", use_container_width=True):
-            row={"PENDAPATAN ORANG TUA":pendapatan,"PEKERJAAN ORANG TUA":pekerjaan,
-                 "JUMLAH TANGGUNGAN":tanggungan,"STATUS RUMAH":rumah}
-            proba=model.predict_proba_log(row); hasil=max(proba,key=proba.get)
+        if st.button("🔍 Prediksi Sekarang", width="stretch"):
+            pend_num = _map_pend[pendapatan]
+            pek_num  = _map_pek[pekerjaan]
+            tang_num = float(tanggungan_input)
+            rmh_num  = _map_rumah[rumah]
+
+            row_num  = {
+                "PENDAPATAN ORANG TUA" : pend_num,
+                "PEKERJAAN ORANG TUA"  : pek_num,
+                "JUMLAH TANGGUNGAN"    : tang_num,
+                "STATUS RUMAH"         : rmh_num,
+            }
+
+            proba  = model.predict_proba_log(row_num)
+            hasil  = model.predict_one(row_num)
+            hasil_lbl = "Ya" if hasil==1 else "Tidak"
 
             st.markdown("---")
-            if hasil=="Ya":
+            if hasil_lbl=="Ya":
                 st.markdown("<div style='text-align:center;padding:1.2rem;'><span class='badge-ya'>✅ LAYAK MENERIMA BSM</span></div>", unsafe_allow_html=True)
                 st.success("Siswa ini **LAYAK** menerima Bantuan Siswa Miskin (BSM).")
             else:
@@ -1038,16 +1247,23 @@ elif menu == "🔍 Prediksi Data Baru":
 
             ca,cb=st.columns(2)
             with ca:
-                st.markdown(f"<div class='card'><div class='card-title'>📋 Data Input</div>", unsafe_allow_html=True)
-                for k,v in row.items():
-                    st.markdown(f"<div style='font-size:.9rem;color:{C6};padding:3px 0;'><b>{k}</b> : {v}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='card'><div class='card-title'>📋 Data Input (Numerik)</div>", unsafe_allow_html=True)
+                input_info = [
+                    ("💰 Pendapatan", f"{pendapatan} → kode {pend_num}"),
+                    ("💼 Pekerjaan",  f"{pekerjaan} → kode {pek_num}"),
+                    ("👨‍👩‍👧 Tanggungan", f"{int(tang_num)} orang"),
+                    ("🏠 Status Rumah", f"{rumah} → kode {rmh_num}"),
+                ]
+                for label_i, val_i in input_info:
+                    st.markdown(f"<div style='font-size:.9rem;color:{C6};padding:3px 0;'><b>{label_i}</b> : {val_i}</div>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
             with cb:
                 st.markdown(f"<div class='card'><div class='card-title'>🧮 Log Posterior</div>", unsafe_allow_html=True)
                 for k,v in proba.items():
+                    lbl_k = "Ya (Layak)" if k==1 else "Tidak (Tidak Layak)"
                     w="#22c55e" if k==hasil else "#f43f5e"
-                    label_terpilih=" ← Terpilih" if k==hasil else ""
-                    st.markdown(f"<div style='color:{w};font-weight:700;font-size:.9rem;padding:3px 0;'>{k} : {round(v,6)}{label_terpilih}</div>", unsafe_allow_html=True)
+                    terpilih=" ← Terpilih" if k==hasil else ""
+                    st.markdown(f"<div style='color:{w};font-weight:700;font-size:.9rem;padding:3px 0;'>Kelas {lbl_k} : {round(v,6)}{terpilih}</div>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
@@ -1065,42 +1281,103 @@ elif menu == "📝 Data Uji":
         df_ref=st.session_state.dataset
         TARGET='LABEL'; FITUR=[c for c in df_ref.columns if c!=TARGET]
 
-        def pil2(kolom):
-            return sorted(df_ref[kolom].unique().tolist()) if kolom in df_ref.columns else []
+        # Mapping dengan label deskriptif
+        _map_pend_uji  = {"Rendah (0)":0, "Sedang (1)":1, "Tinggi (2)":2}
+        _map_rumah_uji = {"Kontrak / Sewa (0)":0, "Milik Sendiri (1)":1}
+        _map_pek_uji   = {
+            "Petani (0)":0, "PNS - Pegawai Negeri Sipil (1)":1,
+            "Polisi (2)":2, "Wiraswasta (3)":3,
+            "Buruh (4)":4, "Pedagang (5)":5,
+            "Nelayan (6)":6, "Swasta (7)":7,
+            "Honorer (8)":8, "Tidak Bekerja (9)":9,
+        }
 
         tab1, tab2, tab3 = st.tabs(["➕ Tambah Manual", "📂 Import File", "📊 Hasil Uji"])
 
         # TAB 1 — TAMBAH MANUAL
         with tab1:
             st.markdown(f"<div class='card'><div class='card-title'>✏️ Input Data Baru</div>", unsafe_allow_html=True)
+
+            # Keterangan kode
+            with st.expander("📌 Lihat Keterangan Kode Setiap Variabel"):
+                k1, k2, k3, k4 = st.columns(4)
+                with k1:
+                    render_keterangan("Pendapatan Orang Tua", KETERANGAN_PENDAPATAN)
+                with k2:
+                    render_keterangan("Pekerjaan Orang Tua", KETERANGAN_PEKERJAAN)
+                with k3:
+                    render_keterangan("Status Rumah", KETERANGAN_RUMAH)
+                with k4:
+                    render_keterangan("Label / Hasil", KETERANGAN_LABEL)
+
             c1,c2=st.columns(2)
             with c1:
-                t_pend=st.selectbox("💰 Pendapatan", pil2('PENDAPATAN ORANG TUA') or ["Rendah","Sedang","Tinggi"], key="du1")
-                t_tang=st.selectbox("👨‍👩‍👧 Tanggungan", pil2('JUMLAH TANGGUNGAN') or ["Sedikit","Sedang","Banyak"], key="du2")
+                t_pend = st.selectbox(
+                    "💰 Pendapatan Orang Tua",
+                    list(_map_pend_uji.keys()),
+                    key="du1",
+                    help="0=Rendah | 1=Sedang | 2=Tinggi"
+                )
+                t_tang = st.number_input(
+                    "👨‍👩‍👧 Jumlah Tanggungan (angka)",
+                    min_value=1, max_value=6, value=3, step=1,
+                    key="du2",
+                    help="Masukkan angka asli jumlah tanggungan, misal: 2, 3, 5"
+                )
             with c2:
-                t_pek=st.selectbox("💼 Pekerjaan", pil2('PEKERJAAN ORANG TUA') or ["Petani","PNS","Wiraswasta"], key="du3")
-                t_rmh=st.selectbox("🏠 Status Rumah", pil2('STATUS RUMAH') or ["Milik Sendiri","Kontrak/Sewa"], key="du4")
+                t_pek = st.selectbox(
+                    "💼 Pekerjaan Orang Tua",
+                    list(_map_pek_uji.keys()),
+                    key="du3",
+                    help="Pilih pekerjaan. Kode dalam kurung adalah nilai numeriknya."
+                )
+                t_rmh = st.selectbox(
+                    "🏠 Status Rumah",
+                    list(_map_rumah_uji.keys()),
+                    key="du4",
+                    help="0=Kontrak/Sewa | 1=Milik Sendiri"
+                )
             st.markdown("</div>", unsafe_allow_html=True)
 
             ca,cb,cc=st.columns(3)
             with ca:
-                if st.button("🔍 Prediksi & Tambah", use_container_width=True):
-                    row={"PENDAPATAN ORANG TUA":t_pend,"PEKERJAAN ORANG TUA":t_pek,
-                         "JUMLAH TANGGUNGAN":t_tang,"STATUS RUMAH":t_rmh}
-                    hasil=model.predict_one(row); row[TARGET]=hasil
-                    new_row=pd.DataFrame([row])
+                if st.button("🔍 Prediksi & Tambah", width="stretch"):
+                    pend_num_u = _map_pend_uji[t_pend]
+                    pek_num_u  = _map_pek_uji[t_pek]
+                    tang_val_u = float(t_tang)
+                    rmh_num_u  = _map_rumah_uji[t_rmh]
+
+                    row_num_u = {
+                        "PENDAPATAN ORANG TUA": pend_num_u,
+                        "PEKERJAAN ORANG TUA" : pek_num_u,
+                        "JUMLAH TANGGUNGAN"   : tang_val_u,
+                        "STATUS RUMAH"        : rmh_num_u,
+                    }
+                    hasil_num = model.predict_one(row_num_u)
+                    hasil_lbl = "Ya (Layak)" if hasil_num==1 else "Tidak (Tidak Layak)"
+
+                    row_simpan = {
+                        "PENDAPATAN ORANG TUA": t_pend,
+                        "PEKERJAAN ORANG TUA" : t_pek,
+                        "JUMLAH TANGGUNGAN"   : int(t_tang),
+                        "STATUS RUMAH"        : t_rmh,
+                        TARGET                : hasil_lbl,
+                    }
+                    new_row=pd.DataFrame([row_simpan])
                     st.session_state.data_uji=pd.concat([st.session_state.data_uji, new_row], ignore_index=True)
-                    if hasil=="Ya": st.success(f"✅ Ditambahkan — Prediksi: **{hasil}**")
-                    else: st.error(f"❌ Ditambahkan — Prediksi: **{hasil}**")
+                    if hasil_num==1:
+                        st.success(f"✅ Ditambahkan — Prediksi: **{hasil_lbl}**")
+                    else:
+                        st.error(f"❌ Ditambahkan — Prediksi: **{hasil_lbl}**")
 
             with cb:
-                if st.button("🗑 Hapus Data Terakhir", use_container_width=True):
+                if st.button("🗑 Hapus Data Terakhir", width="stretch"):
                     if len(st.session_state.data_uji)>0:
                         st.session_state.data_uji=st.session_state.data_uji.iloc[:-1].reset_index(drop=True)
                         st.warning("Data terakhir dihapus.")
 
             with cc:
-                if st.button("🗑 Hapus Semua", use_container_width=True):
+                if st.button("🗑 Hapus Semua", width="stretch"):
                     st.session_state.data_uji=pd.DataFrame()
                     st.warning("Semua data uji dihapus.")
 
@@ -1112,12 +1389,12 @@ elif menu == "📝 Data Uji":
             if file_uji and st.button("📂 Import & Prediksi Semua"):
                 try:
                     df_imp=baca_file(file_uji)
-                    df_clean=auto_preprocess(df_imp)
+                    _, df_clean = auto_preprocess(df_imp)
 
-                    # Jika tidak ada kolom LABEL, prediksi semua
                     if 'LABEL' not in df_clean.columns:
                         fitur_ada=[f for f in FITUR if f in df_clean.columns]
-                        df_clean['LABEL']=model.predict(df_clean[fitur_ada])
+                        y_imp = model.predict(df_clean[fitur_ada])
+                        df_clean['LABEL'] = ["Ya (Layak)" if v==1 else "Tidak (Tidak Layak)" for v in y_imp]
 
                     st.session_state.data_uji=pd.concat(
                         [st.session_state.data_uji, df_clean], ignore_index=True)
@@ -1133,9 +1410,8 @@ elif menu == "📝 Data Uji":
                 df_u=st.session_state.data_uji.copy()
                 df_u.insert(0,"No",range(1,len(df_u)+1))
                 st.markdown(f"**Total data uji : {len(df_u)}**")
-                st.dataframe(df_u, use_container_width=True, height=420)
+                st.dataframe(df_u, width="stretch", height=420)
 
-                # Simpan ke session hasil_uji
                 st.session_state.hasil_uji=st.session_state.data_uji.copy()
 
                 st.markdown("---")
@@ -1143,12 +1419,12 @@ elif menu == "📝 Data Uji":
                 with ca:
                     st.download_button("📥 Download Data Uji CSV",
                         data=df_to_csv_bytes(df_u), file_name="data_uji_bsm.csv",
-                        mime="text/csv", use_container_width=True)
+                        mime="text/csv", width="stretch")
                 with cb:
                     st.download_button("📥 Download Data Uji Excel",
                         data=df_to_excel_bytes(df_u), file_name="data_uji_bsm.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True)
+                        width="stretch")
 
 # =========================================================
 # 💾 UNDUH HASIL
@@ -1172,22 +1448,21 @@ elif menu == "💾 Unduh Hasil":
         </div>
         """, unsafe_allow_html=True)
 
-        # ---- 1. Dataset Preprocessing ----
+        df_tampil_dl = st.session_state.df_tampil if not st.session_state.df_tampil.empty else df
         st.markdown(f"<div class='card'><div class='card-title'>🔬 1. Dataset Hasil Preprocessing</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='font-size:.88rem;color:{C6};margin-bottom:.8rem;'>Dataset setelah normalisasi — {len(df)} data, {len(df.columns)} kolom.</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='font-size:.88rem;color:{C6};margin-bottom:.8rem;'>Dataset setelah normalisasi — {len(df_tampil_dl)} data, {len(df_tampil_dl.columns)} kolom.</div>", unsafe_allow_html=True)
         c1,c2=st.columns(2)
         with c1:
             st.download_button("📥 CSV — Preprocessing",
-                data=df_to_csv_bytes(df), file_name="01_preprocessing_bsm.csv",
-                mime="text/csv", use_container_width=True)
+                data=df_to_csv_bytes(df_tampil_dl), file_name="01_preprocessing_bsm.csv",
+                mime="text/csv", width="stretch")
         with c2:
             st.download_button("📥 Excel — Preprocessing",
-                data=df_to_excel_bytes(df), file_name="01_preprocessing_bsm.xlsx",
+                data=df_to_excel_bytes(df_tampil_dl), file_name="01_preprocessing_bsm.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True)
+                width="stretch")
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # ---- 2. Hasil Prediksi Training ----
         if model:
             y_pred=model.predict(df.drop(columns=['LABEL']))
             y_true=df['LABEL'].tolist()
@@ -1195,7 +1470,6 @@ elif menu == "💾 Unduh Hasil":
             df_pred["Prediksi"]=y_pred
             df_pred["Status"]=["✅ Benar" if a==p else "❌ Salah" for a,p in zip(y_true,y_pred)]
             df_pred.insert(0,"No",range(1,len(df_pred)+1))
-
             acc=accuracy_score(y_true,y_pred)
 
             st.markdown(f"<div class='card'><div class='card-title'>📊 2. Hasil Prediksi Dataset Training</div>", unsafe_allow_html=True)
@@ -1204,71 +1478,61 @@ elif menu == "💾 Unduh Hasil":
             with c1:
                 st.download_button("📥 CSV — Hasil Prediksi Training",
                     data=df_to_csv_bytes(df_pred), file_name="02_hasil_prediksi_training.csv",
-                    mime="text/csv", use_container_width=True)
+                    mime="text/csv", width="stretch")
             with c2:
                 st.download_button("📥 Excel — Hasil Prediksi Training",
                     data=df_to_excel_bytes(df_pred), file_name="02_hasil_prediksi_training.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True)
+                    width="stretch")
             st.markdown("</div>", unsafe_allow_html=True)
 
-            # ---- 3. Laporan Evaluasi ----
             st.markdown(f"<div class='card'><div class='card-title'>📋 3. Laporan Evaluasi Model</div>", unsafe_allow_html=True)
             labels=sorted(set(y_true))
             cm=confusion_matrix(y_true,y_pred,labels=labels)
             rpt=pd.DataFrame(classification_report(y_true,y_pred,output_dict=True)).transpose().round(4)
-
-            # Tambah confusion matrix ke laporan
             cm_df=pd.DataFrame(cm,
                 index=[f"Aktual_{l}" for l in labels],
                 columns=[f"Prediksi_{l}" for l in labels])
-
-            # Gabung jadi satu sheet ringkasan
             ringkasan=pd.DataFrame({
                 "Metrik":["Akurasi","Total Data","Prediksi Benar","Prediksi Salah"],
                 "Nilai":[f"{round(acc*100,2)}%", len(y_true),
                          sum(a==p for a,p in zip(y_true,y_pred)),
                          sum(a!=p for a,p in zip(y_true,y_pred))]
             })
-
-            # Excel multi-sheet
             buf=io.BytesIO()
             with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                 ringkasan.to_excel(writer, sheet_name='Ringkasan', index=False)
                 rpt.to_excel(writer, sheet_name='Classification_Report')
                 cm_df.to_excel(writer, sheet_name='Confusion_Matrix')
                 df_pred.to_excel(writer, sheet_name='Detail_Prediksi', index=False)
-
             c1,c2=st.columns(2)
             with c1:
                 st.download_button("📥 CSV — Classification Report",
                     data=df_to_csv_bytes(rpt.reset_index()),
                     file_name="03_classification_report.csv",
-                    mime="text/csv", use_container_width=True)
+                    mime="text/csv", width="stretch")
             with c2:
                 st.download_button("📥 Excel — Laporan Lengkap (Multi-Sheet)",
                     data=buf.getvalue(), file_name="03_laporan_evaluasi_lengkap.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True)
+                    width="stretch")
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # ---- 4. Data Uji ----
         if not st.session_state.data_uji.empty:
             df_u=st.session_state.data_uji.copy()
             df_u.insert(0,"No",range(1,len(df_u)+1))
-
             st.markdown(f"<div class='card'><div class='card-title'>📝 4. Hasil Data Uji</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='font-size:.88rem;color:{C6};margin-bottom:.8rem;'>{len(df_u)} data uji tersedia.</div>", unsafe_allow_html=True)
             c1,c2=st.columns(2)
             with c1:
                 st.download_button("📥 CSV — Data Uji",
                     data=df_to_csv_bytes(df_u), file_name="04_data_uji_bsm.csv",
-                    mime="text/csv", use_container_width=True)
+                    mime="text/csv", width="stretch")
             with c2:
                 st.download_button("📥 Excel — Data Uji",
                     data=df_to_excel_bytes(df_u), file_name="04_data_uji_bsm.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True)
+                    width="stretch")
             st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.info("💡 Belum ada data uji. Tambahkan di menu **📝 Data Uji** untuk mengaktifkan download ini.")
@@ -1281,7 +1545,6 @@ elif menu == "ℹ️ Tentang Sistem":
 
     st.markdown("## ℹ️ Tentang Sistem")
 
-    # --- Hero Banner ---
     st.markdown(f"""
     <div style='background:linear-gradient(135deg,{C4} 0%,{C6} 100%);
          border-radius:22px;padding:2.5rem 2rem;margin-bottom:1.8rem;text-align:center;
@@ -1313,7 +1576,6 @@ elif menu == "ℹ️ Tentang Sistem":
     col_l, col_r = st.columns([3, 2])
 
     with col_l:
-        # Deskripsi Sistem
         st.markdown(f"""
         <div class='card'>
             <div class='card-title'>📖 Deskripsi Sistem</div>
@@ -1333,7 +1595,6 @@ elif menu == "ℹ️ Tentang Sistem":
         </div>
         """, unsafe_allow_html=True)
 
-        # Fitur Unggulan
         st.markdown(f"""
         <div class='card'>
             <div class='card-title'>✨ Fitur Unggulan</div>
@@ -1361,7 +1622,6 @@ elif menu == "ℹ️ Tentang Sistem":
         st.markdown("</div></div>", unsafe_allow_html=True)
 
     with col_r:
-        # Identitas Pengembang
         st.markdown(f"""
         <div class='card' style='text-align:center;'>
             <div class='card-title'>👩‍💻 Pengembang</div>
@@ -1380,7 +1640,6 @@ elif menu == "ℹ️ Tentang Sistem":
         </div>
         """, unsafe_allow_html=True)
 
-        # Teknologi yang Digunakan
         st.markdown(f"""
         <div class='card'>
             <div class='card-title'>🛠 Teknologi</div>
@@ -1404,7 +1663,6 @@ elif menu == "ℹ️ Tentang Sistem":
             """, unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Atribut Klasifikasi
         st.markdown(f"""
         <div class='card'>
             <div class='card-title'>📌 Atribut Klasifikasi</div>
@@ -1414,12 +1672,11 @@ elif menu == "ℹ️ Tentang Sistem":
             <span style='color:{C4};font-weight:800;'>3.</span> Jumlah Tanggungan<br>
             <span style='color:{C4};font-weight:800;'>4.</span> Status Rumah<br>
             <span style='color:#22c55e;font-weight:800;'>→</span>
-            <b>Label :</b> Ya / Tidak
+            <b>Label :</b> 1=Ya (Layak) / 0=Tidak
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-    # Panduan Penggunaan
     st.markdown("---")
     st.markdown(f"<div class='card-title' style='font-size:1.1rem;color:{C4};font-weight:900;padding:.5rem 0;'>🗺 Alur Penggunaan Sistem</div>", unsafe_allow_html=True)
 
@@ -1449,7 +1706,6 @@ elif menu == "ℹ️ Tentang Sistem":
             </div>
             """, unsafe_allow_html=True)
 
-    # Footer
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"""
     <div style='text-align:center;padding:1.2rem;background:linear-gradient(135deg,{C2},{C5});
@@ -1462,4 +1718,3 @@ elif menu == "ℹ️ Tentang Sistem":
         </div>
     </div>
     """, unsafe_allow_html=True)
-
