@@ -1,0 +1,8 @@
+# Requirements — Sistem Bantuan Miskin 
+# Install semua sekaligus: pip install -r requirements.txt
+
+streamlit
+pandas
+numpy
+scikit-learn
+openpyxl
